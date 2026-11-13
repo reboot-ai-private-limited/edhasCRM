@@ -25,5 +25,5 @@ fi
 sudo pm2 save
 
 sleep 3
-curl -fsS http://127.0.0.1:4020/api/health && echo " api ok"
-curl -fsSI http://127.0.0.1:3020/login | head -1
+curl -fsS http://127.0.0.1:4030/api/health && echo " api ok"
+curl -fsSI http://127.0.0.1:3030/login | head -1
