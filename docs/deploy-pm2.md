@@ -1,6 +1,6 @@
 # Deploy to the shared demo VM (pm2 + nginx)
 
-Web: https://demo.edhas.co.in (port 3030) · API: https://api.demo.edhas.co.in (port 4030).
+Web: https://demo.edhas.co.in (port 3050) · API: https://api.demo.edhas.co.in (port 4050).
 Same VM as greynote / vastu / darjeeling. Not Docker; see `manual_deploy.md` for the Docker route and for the seed/migration scripts.
 
 **Firebase is off by design.** Leave `FIREBASE_SERVICE_ACCOUNT_JSON` out of `.env.prod` entirely (an empty line crashes boot).
@@ -9,7 +9,7 @@ The API then sends no push; Inbox still works.
 ## One-time setup (on the VM)
 
 1. **Prereqs**: Node >= 22; `corepack enable && corepack prepare pnpm@11.18.0 --activate`;
-   `sudo ss -ltnp | grep -E ':(3030|4030)\b'` is empty; `free -h` shows ~2 GB free (add swap otherwise).
+   `sudo ss -ltnp | grep -E ':(3050|4050)\b'` is empty; `free -h` shows ~2 GB free (add swap otherwise).
 2. **DNS**: A records for `demo.edhas.co.in` and `api.demo.edhas.co.in` to the VM's public IP.
 3. **Deploy key**:
    ```bash
@@ -37,7 +37,7 @@ server {
     access_log /var/log/nginx/edhas-web.access.log;
     error_log  /var/log/nginx/edhas-web.error.log;
     location / {
-        proxy_pass http://127.0.0.1:3030;
+        proxy_pass http://127.0.0.1:3050;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
@@ -54,7 +54,7 @@ server {
     error_log  /var/log/nginx/edhas-api.error.log;
     client_max_body_size 10m;
     location / {
-        proxy_pass http://127.0.0.1:4030;
+        proxy_pass http://127.0.0.1:4050;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
