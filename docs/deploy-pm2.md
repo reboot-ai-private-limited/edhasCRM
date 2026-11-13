@@ -1,6 +1,6 @@
 # Deploy to the shared demo VM (pm2 + nginx)
 
-Web: https://demo.edhas.co.in (port 3050) · API: https://api.demo.edhas.co.in (port 4050).
+Web: https://demo.edhas.co.in (port 3050) · API: https://api.edhas.co.in (port 4050).
 Same VM as greynote / vastu / darjeeling. Not Docker; see `manual_deploy.md` for the Docker route and for the seed/migration scripts.
 
 **Firebase is off by design.** Leave `FIREBASE_SERVICE_ACCOUNT_JSON` out of `.env.prod` entirely (an empty line crashes boot).
@@ -10,7 +10,7 @@ The API then sends no push; Inbox still works.
 
 1. **Prereqs**: Node >= 22; `corepack enable && corepack prepare pnpm@11.18.0 --activate`;
    `sudo ss -ltnp | grep -E ':(3050|4050)\b'` is empty; `free -h` shows ~2 GB free (add swap otherwise).
-2. **DNS**: A records for `demo.edhas.co.in` and `api.demo.edhas.co.in` to the VM's public IP.
+2. **DNS**: A records for `demo.edhas.co.in` and `api.edhas.co.in` to the VM's public IP.
 3. **Deploy key**:
    ```bash
    ssh-keygen -t ed25519 -f ~/.ssh/edhas_deploy -C "edhas-demo-vm-deploy" -N ""
@@ -28,7 +28,7 @@ The API then sends no push; Inbox still works.
    ```bash
    sudo ln -s /etc/nginx/sites-available/edhas /etc/nginx/sites-enabled/edhas
    sudo nginx -t && sudo systemctl reload nginx
-   sudo certbot --nginx -d demo.edhas.co.in -d api.demo.edhas.co.in
+   sudo certbot --nginx -d demo.edhas.co.in -d api.edhas.co.in
    ```
 
 ```nginx
@@ -49,7 +49,7 @@ server {
 }
 
 server {
-    server_name api.demo.edhas.co.in;
+    server_name api.edhas.co.in;
     access_log /var/log/nginx/edhas-api.access.log;
     error_log  /var/log/nginx/edhas-api.error.log;
     client_max_body_size 10m;
@@ -70,7 +70,7 @@ server {
 
 ## Verify
 
-- `curl -s https://api.demo.edhas.co.in/api/health` returns 200.
+- `curl -s https://api.edhas.co.in/api/health` returns 200.
 - Log in at https://demo.edhas.co.in as the seeded Admin: no CORS error, `gn_refresh` cookie set (Secure, HttpOnly), reload keeps the session.
 - `sudo pm2 logs edhas-api --lines 50` has no "Invalid environment". `sudo pm2 ls` still shows the other apps online.
 
