@@ -1,0 +1,122 @@
+# Module 5: Planning (Tour Plans) + Rules
+
+Covers: `DailyPlan`, `MonthlyPlan` (+ `MonthlyPlanEntry`), and `SystemConfig` — the generic rule table referenced by every prior module (PRD §6.2 A, §7.2, glossary "TP").
+
+## Diagram
+
+```mermaid
+erDiagram
+    USER {
+        uuid id PK
+        string name "full User entity defined in Module 1"
+    }
+
+    DAILY_PLAN {
+        uuid id PK
+        uuid user_id FK
+        date plan_date
+        string working_type "FIELD_WORK, MEETING, CONFERENCE, STRIKE"
+        json work_with "array of accompanying user_ids"
+        json route_ids "array of Route ids for the day"
+        json doctors "doctors to call: [{doctor_id, carried_from date or null}]; count = calls due"
+        string remarks
+        string status "DRAFT, SUBMITTED, MANAGER_APPROVED, REJECTED"
+        timestamp submitted_at
+        uuid reviewed_by FK "nearest higher manager, nullable until reviewed"
+        timestamp reviewed_at
+    }
+    MONTHLY_PLAN {
+        uuid id PK
+        uuid user_id FK
+        string plan_month "e.g. 2026-10"
+        string status "DRAFT, SUBMITTED, MANAGER_APPROVED, REJECTED"
+        timestamp submitted_at
+        uuid reviewed_by FK "nearest higher manager, nullable until reviewed"
+        timestamp reviewed_at
+    }
+    MONTHLY_PLAN_ENTRY {
+        uuid id PK
+        uuid monthly_plan_id FK
+        date plan_date
+        string working_type "FIELD_WORK, MEETING, CONFERENCE, STRIKE"
+        json work_with "array of accompanying user_ids"
+        json route_ids "array of Route ids for that day"
+        string remarks
+    }
+    LATE_PLAN_SUBMIT_GRANT {
+        uuid id PK
+        uuid user_id FK "the employee allowed to submit late"
+        string kind "DAILY_PLAN, MONTHLY_PLAN"
+        string plan_key "2026-10-05 or 2026-10"
+        string reason
+        uuid granted_by FK "Admin, or a manager in the user's chain"
+        timestamp granted_at
+        timestamp expires_at
+        timestamp used_at "nullable; set by the submit it allowed"
+        timestamp revoked_at "nullable"
+    }
+    SYSTEM_CONFIG {
+        uuid id PK
+        string key UQ "e.g. DAILY_PLAN_SUBMIT_CUTOFF_TIME"
+        string value "e.g. 10:00"
+        string module "tag - PLANNING, AUTH, FIELD_ACTIVITY"
+        string description
+        uuid updated_by FK
+        timestamp updated_at
+    }
+
+    USER ||--o{ DAILY_PLAN : "user_id"
+    USER ||--o{ DAILY_PLAN : "reviewed_by (manager)"
+    USER ||--o{ MONTHLY_PLAN : "user_id"
+    USER ||--o{ MONTHLY_PLAN : "reviewed_by (manager)"
+    MONTHLY_PLAN ||--o{ MONTHLY_PLAN_ENTRY : "monthly_plan_id"
+    USER ||--o{ LATE_PLAN_SUBMIT_GRANT : "user_id / granted_by"
+    USER ||--o{ SYSTEM_CONFIG : "updated_by"
+```
+
+## Design decisions locked for this module
+
+- **A Daily Plan lists the doctors to call (decision-log 2026-10-10).** `DailyPlan.doctors[]` = `{ doctor_id, carried_from }`; its length is the calls due. `carried_from` is the day the doctor was first planned when the entry is a missed call carried over, else null. It is kept apart from the route fields, so an inherited day stays route-locked while its doctors are editable. Carry-over is **not stored**: it is derived on read from APPROVED plans and the reported calls, within the window set by `CALL_CARRY_OVER_FOREVER` / `CALL_CARRY_OVER_DAYS` (0 = until month end).
+- **Out-station trips (2026-10-12).** `PlanDay.day_kind` (`NORMAL`, `STAY`, `TRANSIT`; default `NORMAL`) and, on a Monthly entry only, `return_date`. The server expands `return_date` into the `STAY` days and the `TRANSIT` return day when the month is saved; they are stored as ordinary entries, so inheritance, approval and DCRs need nothing extra.
+- **Monthly Plan is day-by-day, same shape as Daily Plan.** `MonthlyPlan` is the envelope (one row per user per month); `MonthlyPlanEntry` holds one row per planned day with the same fields as `DailyPlan` (`working_type`, `work_with`, `route_ids`, `remarks`). Entries can be edited freely while the parent `MonthlyPlan.status = DRAFT`; the whole month is submitted together, and only then does it move into the approval flow.
+- **A Daily Plan is written from the approved Monthly Plan, by copy, with no foreign key (decision-log 2026-10-03).** `DailyPlan.source` is `MONTHLY` (copied from a `MonthlyPlanEntry`; the owner can't edit it but still submits it) or `MANUAL` (absent on older rows, read as `MANUAL`). `DailyPlan.amendments[]` holds each manager/Admin change: `{ by, at, reason, previous }`. Later edits to the month don't reach a day that was submitted or amended.
+- **The employee changes the day (2026-10-14).** `DailyPlan.plannedFrom` (optional, a copy of the day's body: `workingType`, `dayKind`, `workWith`, `routeIds`, `remarks`) holds what the Monthly Plan said once the employee changed the day (type, work with, doctors; routes follow from them); absent while the day is the Monthly Plan's. `source` is `MANUAL` while it differs. A manager's `workWith` is the team members they work with, and their routes and doctors may belong to them (see `../LLD/planning.md`). The manager's target is not stored: it is the sum of their MRs' (`../LLD/reports.md`).
+- **Superseded 2026-09-24:** approval state (`status`/`reviewed_by`/`reviewed_at` below) moves to the `approval` module's `ApprovalRequest` (`../LLD/approval.md`); the fields are dropped when Planning is built. Kept below as the record of the earlier model.
+- **Same two-stage approval as `DCR` (Module 4).** Both `DailyPlan` and `MonthlyPlan` carry `status`/`reviewed_by`/`reviewed_at`, with `reviewed_by` always the nearest higher manager. Once `status = MANAGER_APPROVED`, Admin visibility is automatic via the `manager_id` hierarchy walk (Module 1) — no separate "sent to admin" field, consistent with how `DCR` handles it.
+- **A late Plan is refused; `LATE_PLAN_SUBMIT_GRANT` is the override** (decision-log 2026-09-28, sign-off B8). One row lets one user submit one Plan (`kind` + `plan_key`) after its deadline, once, before `expires_at`. At most one open (unused, unrevoked) row per `user_id` + `kind` + `plan_key`.
+- **`MONTHLY_PLAN_ENTRY` is embedded in the `MONTHLY_PLAN` Mongo document**, not a separate collection — at most 31, always saved and submitted together.
+- **`route_ids` and `work_with` are JSON arrays**, not join tables — same pattern used for `DoctorCall.work_with` (Module 4) and `Route.waypoints` (Module 2). A plan can cover more than one route or co-worker in a single day.
+- **`SystemConfig` is now formalized**, holding every tunable value referenced by earlier modules rather than hardcoding them:
+  - `DAILY_PLAN_SUBMIT_CUTOFF_TIME` = `10:00`
+  - `MONTHLY_PLAN_SUBMIT_CUTOFF_DATE` = `28`
+  - `BUSINESS_TIMEZONE` = `Asia/Kolkata` — the timezone every business deadline is read in
+  - `LATE_PLAN_GRANT_BY_MANAGER` = `false` — whether a manager (not just Admin) may grant a late-submission exception
+  - `LATE_PLAN_GRANT_MAX_HOURS` = `744` — the furthest ahead a late-submission exception's `expiresAt` can be set
+  - `LATE_PLAN_GRANT_VALID_HOURS` = `24` — how long a late-submission exception stays usable
+  - `DAILY_PLAN_RESUBMIT_GRACE_MINUTES` = `30` — after a rejection, how long a Daily Plan may still be resubmitted past its deadline
+  - `DAILY_PLAN_RESUBMIT_LATEST_TIME` = `11:30` — no Daily Plan resubmit window runs past this time on the plan's date
+  - `MONTHLY_PLAN_RESUBMIT_GRACE_HOURS` = `24` — the same window for a Monthly Plan, never past the month's start
+  - `PLAN_RESUBMIT_GRACE_MAX` = `2` — at most this many window resubmits per Plan
+  - `DOCTOR_VISIBILITY_FOLLOWS_ROUTE` = `true` (Module 3) — an MR sees only the assigned Doctors on their current Routes; off, they keep every assigned Doctor across a Route change
+  - `AUTO_ASSIGN_DOCTOR_ON_APPROVAL` = `true` (Module 3) — approving an MR-added Doctor assigns it to that MR
+  - `MAX_REGISTERED_DEVICES_FIELD` = `2` (Module 1) — approved + pending phones per field employee
+  - `REJECTED_DEVICE_TTL_DAYS` = `7` (Module 1) — how long a phone Admin rejected stays blocked
+  - `DOCTOR_VISIT_GAP_DAYS` = `8` (Module 4, 0–9) — days between one employee's visits (call or follow-up) to the same doctor (2026-10-22). `NEW_DOCTOR_COVERAGE_WAIT_DAYS` was removed the same day: unused
+  - `GEO_FENCE_RADIUS_METERS` = `100` (Module 4; matches the client's document, Admin can change it in System Config, sign-off C5)
+  - `GEO_MAX_ACCURACY_METERS` = `100` — a GPS reading less accurate than this makes a call's geofence `UNVERIFIED`
+  - `SYNC_MAX_BATCH` = `100`, `SYNC_MAX_AGE_DAYS` = `7`, `SYNC_CLOCK_SKEW_MINUTES` = `10` — the daily-report push's limits (`LLD/sync.md`)
+  - `SYNC_DRAFT_TTL_DAYS` = `30`, `SYNC_MAX_DRAFT_BYTES` = `65536`, `SYNC_MAX_DRAFTS` = `2000` — the private draft backup's retention and limits
+  - `DCR_MISS_BLOCK_ENABLED` = `true` (Module 1/4, HLD 10) — kill switch for the missed-DCR compliance block
+  - `DCR_MISS_GRACE_DAYS` = `1` (Module 1/4, HLD 10) — how many consecutive days without a submitted DCR (and without an approved Leave covering them) are allowed before the block triggers; `0` = the first missed day blocks
+  - `TEAM_NOT_STARTED_AFTER` = `11:00` (Module 4, 2026-10-12) — the time of day after which a field employee with no calls or follow-ups logged shows as "not started" on their manager's Team screen. Display only; blocks and flags nothing.
+  - `ALLOW_UNPLANNED_DOCTOR_CALLS` — **removed 2026-10-12**: a call to a doctor off the day's list is always saved and flagged (decision-log 2026-10-12)
+  - `DCR_APPROVAL_REQUIRED` = `true` (Module 4, decision-log 2026-10-03) — off: a submitted DCR is approved at once (authority `AUTO`) and its TA/DA generated then
+  - `APPROVAL_SLA_DAYS` = `3` (Module 1/approval) — days an approver has before a request is flagged overdue; flag only, nothing is auto-approved
+  - `MONTHLY_STOCK_DEADLINE_DAY` = `5` (Module 6) — month *M*'s opening/closing stock is due by this day of the following month (replaces `MONTHLY_STOCK_GRACE_DAYS`)
+  - `CALL_CARRY_OVER_FOREVER` = `false`, `CALL_CARRY_OVER_DAYS` = `0` (Module 5, decision-log 2026-10-10) — how long a planned but uncalled doctor carries over to later days' plans (0 = until the end of that month)
+  - `SystemConfig` values are Admin-writable at runtime, not just seed defaults — a `PATCH` per key, ADMIN-only, so e.g. `DCR_MISS_GRACE_DAYS` can be moved from its seeded `1` to `0` (block on the first miss) or `2` without a redeploy (decision-log 2026-09-24)
+- **`Submit` on `DailyPlan`/`MonthlyPlan` requires a live connection at tap time — unlike other transactional records (HLD 1 §1.1), it does not queue offline.** Saving as `DRAFT` still works fully offline for UX; only the state transition into the approval flow needs a synchronous server round-trip, since it's what the DailyPlan-approval gate (HLD 10) depends on. Same carve-out applies to `DCR` Final Submission (Module 4).
+
+## Next
+
+**Module 6 — Sales & Orders.** `Order` (standalone, attaching to either `Distributor` or `Chemist` — not linked to `ChemistCall`, per Module 4's decision) and Chemist/Distributor Monthly Opening/Closing stock.

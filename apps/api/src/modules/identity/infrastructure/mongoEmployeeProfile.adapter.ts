@@ -1,0 +1,172 @@
+import { Types } from 'mongoose';
+import type { EmployeeProfile } from '../domain/employeeProfile.entity.js';
+import type { EmployeeProfileRepositoryPort } from '../domain/employeeProfile.repository.port.js';
+import { UserModel } from './user.schema.js';
+import { EmployeeProfileModel, type EmployeeProfileDoc } from './employeeProfile.schema.js';
+
+/** Real chains are ~5 levels (MR→ASM→RSM→ZSM→NSM); this only bounds a corrupted, looping tree. */
+const MAX_DOWNLINE_DEPTH = 50;
+
+function toEmployeeProfile(doc: EmployeeProfileDoc & { _id: unknown }): EmployeeProfile {
+  return {
+    id: String(doc._id),
+    userId: String(doc.userId),
+    designationId: doc.designationId ? String(doc.designationId) : null,
+    payBandId: doc.payBandId ? String(doc.payBandId) : null,
+    managerId: doc.managerId ? String(doc.managerId) : null,
+    dateOfJoining: doc.dateOfJoining,
+    lastWorkingDay: doc.lastWorkingDay ?? null,
+    rejoinedOn: doc.rejoinedOn ?? null,
+    onProbation: doc.onProbation ?? false,
+    probationMonths: doc.probationMonths ?? null,
+    esiNumber: doc.esiNumber ?? null,
+    epfNumber: doc.epfNumber ?? null,
+    hqId: doc.hqId ? String(doc.hqId) : null,
+    zoneId: doc.zoneId ? String(doc.zoneId) : null,
+    mobileNumber: doc.mobileNumber,
+    alternateMobile: doc.alternateMobile ?? null,
+    guardianName: doc.guardianName,
+    dateOfBirth: doc.dateOfBirth,
+    address: doc.address,
+    permanentAddress: doc.permanentAddress ?? null,
+    permanentSameAsPresent: doc.permanentSameAsPresent ?? false,
+    qualification: doc.qualification,
+    qualifications: doc.qualifications ?? [],
+    previousEmployment: doc.previousEmployment ?? [],
+    bankDetails: doc.bankDetails,
+    documents: doc.documents,
+    photo: doc.photo ?? null,
+  };
+}
+
+/** Converts the string-id fields a domain `EmployeeProfile` patch carries into `ObjectId`s. */
+function toDocFields(input: Partial<Omit<EmployeeProfile, 'id' | 'userId'>>): Record<string, unknown> {
+  const doc: Record<string, unknown> = { ...input };
+  if (input.designationId !== undefined) {
+    doc.designationId = input.designationId ? new Types.ObjectId(input.designationId) : null;
+  }
+  if (input.payBandId !== undefined) {
+    doc.payBandId = input.payBandId ? new Types.ObjectId(input.payBandId) : null;
+  }
+  if (input.managerId !== undefined) {
+    doc.managerId = input.managerId ? new Types.ObjectId(input.managerId) : null;
+  }
+  if (input.hqId !== undefined) {
+    doc.hqId = input.hqId ? new Types.ObjectId(input.hqId) : null;
+  }
+  if (input.zoneId !== undefined) {
+    doc.zoneId = input.zoneId ? new Types.ObjectId(input.zoneId) : null;
+  }
+  return doc;
+}
+
+export class MongoEmployeeProfileAdapter implements EmployeeProfileRepositoryPort {
+  async findByUserId(userId: string): Promise<EmployeeProfile | null> {
+    const doc = await EmployeeProfileModel.findOne({ userId: new Types.ObjectId(userId) }).lean();
+    return doc ? toEmployeeProfile(doc) : null;
+  }
+
+  async findByUserIds(userIds: string[]): Promise<EmployeeProfile[]> {
+    if (userIds.length === 0) return [];
+    const docs = await EmployeeProfileModel.find({
+      userId: { $in: userIds.map((id) => new Types.ObjectId(id)) },
+    }).lean();
+    return docs.map(toEmployeeProfile);
+  }
+
+  async upsert(userId: string, input: Partial<Omit<EmployeeProfile, 'id' | 'userId'>>): Promise<EmployeeProfile> {
+    const doc = await EmployeeProfileModel.findOneAndUpdate(
+      { userId: new Types.ObjectId(userId) },
+      { $set: toDocFields(input), $setOnInsert: { userId: new Types.ObjectId(userId) } },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    ).lean();
+    // `doc` is never null here: upsert:true + new:true always returns the (created-or-updated) document.
+    return toEmployeeProfile(doc as EmployeeProfileDoc & { _id: unknown });
+  }
+
+  async findDownline(managerId: string): Promise<Array<{ userId: string; managerId: string; depth: number }>> {
+    const rootId = new Types.ObjectId(managerId);
+    // Start at the direct reports, then let $graphLookup walk managerId downward from each. Its
+    // depthField counts from 0 at the first hop below the start document, hence the +2 below.
+    const rows = await EmployeeProfileModel.aggregate<{
+      userId: Types.ObjectId;
+      managerId: Types.ObjectId;
+      below: Array<{ userId: Types.ObjectId; managerId: Types.ObjectId; depth: number }>;
+    }>([
+      { $match: { managerId: rootId } },
+      {
+        $graphLookup: {
+          from: EmployeeProfileModel.collection.name,
+          startWith: '$userId',
+          connectFromField: 'userId',
+          connectToField: 'managerId',
+          as: 'below',
+          depthField: 'depth',
+          maxDepth: MAX_DOWNLINE_DEPTH,
+        },
+      },
+      { $project: { userId: 1, managerId: 1, 'below.userId': 1, 'below.managerId': 1, 'below.depth': 1 } },
+    ]);
+
+    // Keep the shallowest depth per user; drop the root in case bad data loops back to it.
+    const byUser = new Map<string, { userId: string; managerId: string; depth: number }>();
+    const add = (userId: Types.ObjectId, manager: Types.ObjectId, depth: number) => {
+      const id = String(userId);
+      if (id === managerId) return;
+      const seen = byUser.get(id);
+      if (!seen || depth < seen.depth) byUser.set(id, { userId: id, managerId: String(manager), depth });
+    };
+    for (const row of rows) {
+      add(row.userId, row.managerId, 1);
+      for (const below of row.below) add(below.userId, below.managerId, below.depth + 2);
+    }
+    return [...byUser.values()];
+  }
+
+  async findUserIdsLeftOnOrAfter(date: string): Promise<string[]> {
+    return (await EmployeeProfileModel.find({ lastWorkingDay: { $gte: date } }).select('userId').lean()).map((d) => String(d.userId));
+  }
+
+  async findUserIdsByFilter(filter: { designationId?: string; managerId?: string }): Promise<string[]> {
+    const query: Record<string, unknown> = {};
+    if (filter.designationId) query.designationId = new Types.ObjectId(filter.designationId);
+    if (filter.managerId) query.managerId = new Types.ObjectId(filter.managerId);
+
+    const docs = await EmployeeProfileModel.find(query).select('userId').lean();
+    return docs.map((doc) => String(doc.userId));
+  }
+
+  async findManagerIds(): Promise<string[]> {
+    const ids = await EmployeeProfileModel.distinct('managerId', { managerId: { $ne: null } });
+    return ids.map(String);
+  }
+
+  async findChildrenPage(
+    parentId: string | null,
+    paging: { skip: number; limit: number },
+  ): Promise<{ items: Array<{ userId: string; directCount: number }>; total: number }> {
+    const match = { managerId: parentId ? new Types.ObjectId(parentId) : null };
+    const [total, page] = await Promise.all([
+      EmployeeProfileModel.countDocuments(match),
+      // Names live on the User row, so join to sort by them; the page is small, the join is by indexed _id.
+      EmployeeProfileModel.aggregate<{ userId: Types.ObjectId }>([
+        { $match: match },
+        { $lookup: { from: UserModel.collection.name, localField: 'userId', foreignField: '_id', as: 'u' } },
+        { $addFields: { sortName: { $toLower: { $ifNull: [{ $arrayElemAt: ['$u.name', 0] }, ''] } } } },
+        { $sort: { sortName: 1, _id: 1 } },
+        { $skip: paging.skip },
+        { $limit: paging.limit },
+        { $project: { userId: 1 } },
+      ]),
+    ]);
+    const ids = page.map((p) => p.userId);
+    const counts = ids.length
+      ? await EmployeeProfileModel.aggregate<{ _id: Types.ObjectId; n: number }>([
+          { $match: { managerId: { $in: ids } } },
+          { $group: { _id: '$managerId', n: { $sum: 1 } } },
+        ])
+      : [];
+    const countOf = new Map(counts.map((c) => [String(c._id), c.n]));
+    return { items: page.map((p) => ({ userId: String(p.userId), directCount: countOf.get(String(p.userId)) ?? 0 })), total };
+  }
+}

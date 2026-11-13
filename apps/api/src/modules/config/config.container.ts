@@ -1,0 +1,36 @@
+import type { Router } from 'express';
+import { FinancialYearClose } from './application/usecases/financialYearClose.usecase.js';
+import { GetConfigValueUseCase } from './application/usecases/getConfigValue.usecase.js';
+import { GetPublicConfigUseCase } from './application/usecases/getPublicConfig.usecase.js';
+import { ListConfigUseCase } from './application/usecases/listConfig.usecase.js';
+import { SeedDefaultConfigUseCase } from './application/usecases/seedDefaultConfig.usecase.js';
+import { UpdateConfigValueUseCase } from './application/usecases/updateConfigValue.usecase.js';
+import { MongoSystemConfigAdapter } from './infrastructure/mongoSystemConfig.adapter.js';
+import { makeFinancialYearControllers, makeListConfigController, makePublicConfigController, makeUpdateConfigController } from './interface/config.controller.js';
+import { buildConfigRouter } from './interface/config.route.js';
+import type { ConfigPublicContract } from './config.public.js';
+
+export interface ConfigContainer {
+  contract: ConfigPublicContract;
+  /** Idempotent: adds the default row of every setting that has none, never overwriting a stored value; returns the keys added. Run at boot and by `pnpm seed`. */
+  seed: () => Promise<string[]>;
+  buildRouter: () => Router;
+}
+
+export function buildConfigContainer(): ConfigContainer {
+  const repository = new MongoSystemConfigAdapter();
+  const getConfigValue = new GetConfigValueUseCase(repository);
+  const seedDefaultConfig = new SeedDefaultConfigUseCase(repository);
+  const updateConfigValue = new UpdateConfigValueUseCase(repository);
+  const listConfig = new ListConfigUseCase(repository);
+  const getPublicConfig = new GetPublicConfigUseCase(repository);
+  const financialYearClose = new FinancialYearClose(repository);
+
+  return {
+    contract: {
+      get: (key: string) => getConfigValue.execute(key),
+    },
+    seed: () => seedDefaultConfig.execute(),
+    buildRouter: () => buildConfigRouter({ financialYear: makeFinancialYearControllers(financialYearClose), list: makeListConfigController(listConfig), publicSettings: makePublicConfigController(getPublicConfig), update: makeUpdateConfigController(updateConfigValue) }),
+  };
+}

@@ -1,0 +1,105 @@
+import { Types, type ClientSession } from 'mongoose';
+import type { TransactionContext } from '@/shared/db/transaction.port.js';
+import type { MonthlyPlan, MonthlyPlanAmendment, MonthlyPlanEntry } from '../domain/monthlyPlan.entity.js';
+import type { MonthlyPlanRepositoryPort } from '../domain/monthlyPlan.repository.port.js';
+import { MonthlyPlanModel, type MonthlyPlanDoc, type MonthlyPlanEntryDoc } from './monthlyPlan.schema.js';
+import { isDuplicateKey, toDayDoc, toPlanDay } from './planDoc.js';
+
+const toEntries = (docs: MonthlyPlanEntryDoc[]): MonthlyPlanEntry[] =>
+  docs.map((e) => ({ planDate: e.planDate, returnDate: e.returnDate ?? null, ...toPlanDay(e) }));
+
+function toPlan(doc: MonthlyPlanDoc & { _id: unknown }): MonthlyPlan {
+  return {
+    id: String(doc._id),
+    userId: String(doc.userId),
+    planMonth: doc.planMonth,
+    entries: toEntries(doc.entries),
+    amendments: (doc.amendments ?? []).map((a) => ({ by: String(a.by), at: a.at, reason: a.reason, previous: toEntries(a.previous) })),
+    revision: doc.revision,
+    lateResubmits: doc.lateResubmits ?? 0,
+    updatedAt: doc.updatedAt,
+  };
+}
+
+const toEntryDocs = (entries: MonthlyPlanEntry[]) => entries.map((e) => ({ planDate: e.planDate, returnDate: e.returnDate, ...toDayDoc(e) }));
+
+export class MongoMonthlyPlanAdapter implements MonthlyPlanRepositoryPort {
+  async findById(id: string): Promise<MonthlyPlan | null> {
+    if (!Types.ObjectId.isValid(id)) return null;
+    const doc = await MonthlyPlanModel.findById(id).lean();
+    return doc ? toPlan(doc) : null;
+  }
+
+  async findByUserAndMonth(userId: string, planMonth: string): Promise<MonthlyPlan | null> {
+    const doc = await MonthlyPlanModel.findOne({ userId: new Types.ObjectId(userId), planMonth }).lean();
+    return doc ? toPlan(doc) : null;
+  }
+
+  async listForUser(userId: string, fromMonth: string, toMonth: string): Promise<MonthlyPlan[]> {
+    const docs = await MonthlyPlanModel.find({
+      userId: new Types.ObjectId(userId),
+      planMonth: { $gte: fromMonth, $lte: toMonth },
+    })
+      .sort({ planMonth: 1 })
+      .lean();
+    return docs.map(toPlan);
+  }
+
+  async listFromMonth(planMonth: string): Promise<MonthlyPlan[]> {
+    const docs = await MonthlyPlanModel.find({ planMonth: { $gte: planMonth } }).sort({ planMonth: 1 }).lean();
+    return docs.map(toPlan);
+  }
+
+  async save(
+    userId: string,
+    planMonth: string,
+    entries: MonthlyPlanEntry[],
+    expectedRevision: number | null,
+  ): Promise<MonthlyPlan | null> {
+    const body = { entries: toEntryDocs(entries), updatedAt: new Date() };
+    if (expectedRevision === null) {
+      try {
+        const doc = await MonthlyPlanModel.create({ userId: new Types.ObjectId(userId), planMonth, ...body, revision: 1, lateResubmits: 0 });
+        return toPlan(doc.toObject());
+      } catch (err) {
+        // Another save created the month's plan first.
+        if (isDuplicateKey(err)) return null;
+        throw err;
+      }
+    }
+    const doc = await MonthlyPlanModel.findOneAndUpdate(
+      { userId: new Types.ObjectId(userId), planMonth, revision: expectedRevision },
+      { $set: body, $inc: { revision: 1 } },
+      { new: true },
+    ).lean();
+    return doc ? toPlan(doc) : null;
+  }
+
+  async amend(id: string, expectedRevision: number, entries: MonthlyPlanEntry[], amendment: MonthlyPlanAmendment, ctx?: TransactionContext): Promise<MonthlyPlan | null> {
+    if (!Types.ObjectId.isValid(id)) return null;
+    const doc = await MonthlyPlanModel.findOneAndUpdate(
+      { _id: id, revision: expectedRevision },
+      {
+        $set: { entries: toEntryDocs(entries), updatedAt: amendment.at },
+        $push: { amendments: { by: new Types.ObjectId(amendment.by), at: amendment.at, reason: amendment.reason, previous: toEntryDocs(amendment.previous) } },
+        $inc: { revision: 1 },
+      },
+      { new: true, session: (ctx as ClientSession | undefined) ?? null },
+    ).lean();
+    return doc ? toPlan(doc) : null;
+  }
+
+  async deleteById(id: string, revision: number, ctx: TransactionContext): Promise<boolean> {
+    const result = await MonthlyPlanModel.deleteOne({ _id: id, revision }, { session: ctx as ClientSession });
+    return result.deletedCount === 1;
+  }
+
+  async confirmRevision(id: string, revision: number, countLateResubmit: boolean, ctx: TransactionContext): Promise<boolean> {
+    const result = await MonthlyPlanModel.updateOne(
+      { _id: id, revision },
+      { $inc: { revision: 1, ...(countLateResubmit && { lateResubmits: 1 }) } },
+      { session: ctx as ClientSession },
+    );
+    return result.matchedCount === 1;
+  }
+}

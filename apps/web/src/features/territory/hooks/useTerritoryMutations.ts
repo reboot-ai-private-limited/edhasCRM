@@ -1,0 +1,50 @@
+'use client';
+
+import type { TerritoryStatus, UpdateHqDto, UpdateZoneDto, ZoneDto } from '@edhas/contracts';
+import { hqsApi, zonesApi } from '@/lib/api/endpoints/territory';
+import { useApiMutation } from '@/lib/query/mutation';
+import { keys } from '@/lib/query/keys';
+import type { CreateHqDto, CreateZoneDto } from '@edhas/contracts';
+
+/**
+ * Writes for Zones and HQs. They reference each other, so a change at one level invalidates both
+ * lists (a renamed zone shows in the HQ table's zone column). Renaming an HQ re-names
+ * its routes, so HQ writes refresh the routes too.
+ */
+const invalidates = () => [keys.zones.all(), keys.hqs.all(), keys.routes.all()];
+
+export function useCreateZone(onDone: (zone: ZoneDto) => void) {
+  return useApiMutation<CreateZoneDto, ZoneDto>({
+    call: (token, body) => zonesApi.create(token, body),
+    invalidates: invalidates(),
+    successMessage: 'Zone created.',
+    onSuccess: onDone,
+  });
+}
+export function useUpdateZone(onDone?: () => void) {
+  return useApiMutation<{ id: string; body: UpdateZoneDto }>({
+    call: (token, { id, body }) => zonesApi.update(token, id, body),
+    invalidates: invalidates(),
+    successMessage: 'Zone updated.',
+    ...(onDone && { onSuccess: onDone }),
+  });
+}
+
+export function useCreateHq(onDone: () => void) {
+  return useApiMutation<CreateHqDto>({
+    call: (token, body) => hqsApi.create(token, body),
+    invalidates: invalidates(),
+    successMessage: 'HQ created.',
+    onSuccess: onDone,
+  });
+}
+export function useUpdateHq(onDone?: () => void) {
+  return useApiMutation<{ id: string; body: UpdateHqDto }>({
+    call: (token, { id, body }) => hqsApi.update(token, id, body),
+    invalidates: invalidates(),
+    successMessage: 'HQ updated.',
+    ...(onDone && { onSuccess: onDone }),
+  });
+}
+
+export const STATUS_LABEL: Record<TerritoryStatus, string> = { active: 'Active', inactive: 'Inactive' };

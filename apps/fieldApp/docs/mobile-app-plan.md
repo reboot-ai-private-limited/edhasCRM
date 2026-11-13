@@ -1,0 +1,326 @@
+# Field App — Flow, Roadmap & Screens
+
+The field-force mobile app (`apps/fieldApp`, Expo + React Native) for Medical Representatives (MR)
+and managers (ASM → RSM → ZSM → NSM). This is the working plan for Phase 10 of
+[`roadmap.md`](../../../docs/roadmap.md). Product rules live in [`prd.md`](../../../docs/prd.md) §6–§8; the offline design is
+[`hld/01-sync-and-geofencing.md`](../../../docs/hld/01-sync-and-geofencing.md) and
+[`LLD/sync.md`](../../../docs/LLD/sync.md); gating is
+[`hld/10-submission-gating-and-compliance-block.md`](../../../docs/hld/10-submission-gating-and-compliance-block.md).
+
+Last updated 2026-10-09. Day counts are estimates for one experienced developer.
+
+---
+
+## 1. Where we are today
+
+| Area | State |
+|---|---|
+| Screens built | Splash, Login, Device Status, 4-tab shell (Home / Docs / Reports / Team — placeholders) |
+| Login | **Connected** to `POST /api/identity/auth/login`; tokens kept in secure storage; device-approval refusals route to Device Status |
+| Stage 0 | **Done 2026-10-07:** session restore on launch, authenticated API client with single-flight token refresh, logout + Profile screen, `/auth/me` load, signed-out redirect, tablet-ready layout (centred max-width, all orientations, `useResponsive`) |
+| Stage 1 | **Built and phone-tested 2026-10-07 (pull, push refusal, offline banner, backup, cold restart; the SYNCED push path still needs an employee with a route):** `src/offline/` — SQLite store (memory on web), outbox, pull / push / draft backup / restore against `/sync/*`, on-device geofence (matches the server on 20,000 random cases), connectivity hook, offline banner, sync chip on Home. |
+| Stage 2 | **Built 2026-10-07:** Home with the four tile sections (21 tiles), a today card showing the Tour Plan status, tiles locked by the day gate (plan approved, account unblocked — logic in `offline/day.ts`, checked on 11 cases) with a tap-to-explain message, a placeholder screen per tile (`/feature/[key]`), responsive 2/3-column grid. Seen on a real phone for a FIELD user with no plan; the **approved-plan and blocked states are not yet seen on a phone**. |
+| Stage 3 | **Built 2026-10-07:** Daily Plan (date chips, working type, routes, remarks; save / submit / withdraw; in-day change request) and Monthly Plan (day list, fill-all, weekly off skipped; save / submit / withdraw). Save and Submit need a connection, so offline the form is kept on the phone. Tested on a real phone against the real API: daily and monthly submit and withdraw, offline notice. **Not built:** the Work With picker (no endpoint lists colleagues for an MR) and a late-submission screen (those exceptions are *granted* by a manager or Admin, so they belong to the Team tab, Stage 5). **Not tested:** the route picker with real routes (EMP03 has none), approval, rejection reason, and the in-day change request. |
+| Stage 4 (done) | **Built 2026-10-08, phone-tested end to end (online, offline, a refused record and its retry):** Dr Call and Chemist Call (picker limited to today's plan routes, samples capped by allocation, GPS and on-device geofence, drafts on the phone), Dr and Chemist Followup, Expenses (**replaced 2026-10-10 by the monthly statement:** TA, DA and dated "Other" entries per month with a required reason, sent for approval after the month ends, the approver's rejection reason shown, read offline from the last copy, up to 3 optional receipts (PDF/JPG/PNG, 5 MB) per Other entry, uploaded after the expense is saved, opened by the MR and by the approver; the line below describes the older per-day entry) (rupees typed, whole paise stored; TA and DA never entered), Add Doctor (route, name, address, speciality, qualification, optional email; location is the phone's GPS, no map; works offline and sends on its own; approved by manager then Admin; Change, Withdraw and rejection reason; phone-tested), Leave (balances from the last sync, request, change and resend, withdraw; proof files attached on the request form or afterwards — PDF/JPG/PNG, 5 MB, 3 files; online only; phone-tested), Summary and Final Submission (queues the day, sends in order, shows a refused record with its reason). All of it reached the manager in the web portal. **Added 2026-10-10 (doctor visit targets):** Add Doctor takes an optional date of birth, anniversary and visits a month (1–6); a Missed Calls screen under DCR shows each doctor's calls against that target ("1 called, 3 missed", a manager also sees the team) from `/reports/doctor-visits`; the Dr Call picker shows the progress. Only calls on submitted or approved days count; birthday and anniversary reminders are not built (the server has none). **Known gaps:** the phone re-checks the server only on start, foreground and reconnect; a deactivated doctor or chemist shows as "Doctor/Chemist (no longer active)" in the Summary; the Work With picker waits on the colleagues endpoint. |
+| Stage 5 | **Built and phone-tested 2026-10-08 as a manager login:** Team tab (shown when the user has any team request — the backend has no isManager flag, so the app checks the approvals lists once and remembers it), Inbox and Team activity (everyone / direct reports / further down), request detail for all seven kinds (plans, plan change, daily report with calls, followups and expenses, leave with proof links, new doctor with its captured location, doctor service), history, Approve (optional comment), Reject (reason required), Accept a flagged call (reason required), and bulk approve/reject with per-item results. Online only. **Not tested:** read-only rows for deeper levels, bulk reject, an Admin-level approval. |
+| Stage 6 | **Built 2026-10-08, typechecked and linted, NOT yet run on a phone:** Orders (place offline, Placed / Done / Cancelled, mark done or cancel online; price starts at PTR for a chemist, PTS for a distributor, editable), Monthly Stock (per outlet and month, opening pre-filled from last month's closing, replace on re-save), Gifts (mark done, works offline), Services (request, change, withdraw, rejection reason), Visuals (list kept for offline; pictures open in the app, PDFs and videos in the phone's viewer), Targets (month stepper, own plus team; view-only since 2026-10-24: only Admin sets targets, on the web). Orders, stock counts, services and gifts are standalone outbox records: sent at once when online, and by the background sync after being saved offline (`STANDALONE_KINDS` in `offline/engine.ts`; a refused one is left for its owner, not retried). Campaigns were removed from the app on 2026-10-09 (the backend will drop them later). Targets follow the backend model of 2026-10-10: set per product (one month or a run of months, current financial year only), achievement is the **secondary** the employee enters on its own Secondary Sales tab in Marketing, separate from Monthly Stock (`/sales/employee-sales`, `/sales/employee-secondary`), measured by `/reports/employee-sales` with primary beside it; the team roll-up and a manager's team sales dashboard are not built yet, and a manager has a read-only Team orders list (2026-10-09). |
+| Stage 7 (partly) | **Built, typechecked, NOT yet run on a phone:** Holidays, Financial-Year switch (a past year makes everything read-only), and the Reports tab (DCR with a detail screen, Tour Plan with rejection reasons, Gift & Sales assembled on the phone), each by month. **Docs tab built** (own payslips and the documents Admin shares, `/payroll/me` and `/documents`); **Forms removed** from the product (decision-log 2026-10-12). **Added 2026-10-13, typechecked and linted, NOT yet run on a phone:** the closed-financial-year banner (`closedFinancialYears` from `/config/public`, kept for offline; the Financial Year list marks closed years), and the employee's own report reads on the Reports tab — a **TA / DA** tab (`/reports/me/ta-da`, `/ta-da/days`) and, on the DCR tab, the month's call figures and "doctors not yet visited" (`/reports/me/dcr`, `/dcr/coverage`). |
+| Field-app polish 2026-10-14 | **Built, checked on a phone:** Home visuals slider under the profile card (profile card slimmer, shows the employee's photo; the MR cannot change it, HR sets it on the web), Expenses and Leave under Utility, Visuals as a grid (one card per row on a phone, 2-3 on tablets) with a swipeable full-screen viewer, Reports as labelled cards with a totals box, and red field-level form errors with scroll-to-first-error (`FormField`, `useFormErrors`). **Follows the server change of 2026-10-14** (`docs/mobile/orders-and-stock.md`, `secondary-and-targets.md`, `docs.md`): sales are valued at **PTS** not PTR (Secondary Sales, Targets); **achievement is counted from the distributors' stock**, so Secondary Sales is the employee's own record and says so; an order shows **Ordered / Supplied / Free / Not supplied** and the delivered amount, "You ordered" for an order the office changed, and "Added / Changed by office"; primary counts what was **delivered**; the payslip shows "Rounded off"; Gift & Sales lists **primary by distributor**. Not built: CSV download of reports. |
+| Not done | `isManager` flag, designation name, every Home / Docs / Reports / Team screen, the offline store and sync |
+| Backend | Complete for all modules (Phases 0–8 of the roadmap); the gaps the app needs are listed in §7 |
+
+---
+
+## 2. End-to-end flow (one field day)
+
+```
+Launch ─► Splash ─► has valid session? ──no──► Login ──► (device pending/rejected/limit) ─► Device Status
+              │                                   │
+             yes                                  ▼ success
+              └──────────────────────────────► Home (tabs)
+                                                   │
+ ┌─────────────────────────────────────────────────┘
+ │
+ ▼  MORNING
+ Daily Plan (pick date, working type, work-with, routes)
+   └─ Submit (needs internet) ─► manager approves in Team tab ─► Plan APPROVED
+ │
+ ▼  DURING THE DAY (gated: needs today's Plan approved and account not blocked)
+ Dr Call ──► GPS captured on device ──► saved to local queue (offline OK)
+ Chemist Call / Followups / Add Doctor / Expenses / Orders / Stock counts ──► same local queue
+ │
+ ▼  END OF DAY
+ Summary ─► Final Submission (needs internet)
+   └─ pushes the queue in dependency order ─► DCR goes to manager as an approval request
+ │
+ ▼  AFTER
+ Manager approves ─► Admin ─► Accountant pays TA/DA ─► Payroll
+```
+
+**Approval path (PRD §7):** employee → nearest higher manager (acts in the Team tab) → Admin.
+Managers further up the chain see it read-only. The top of the chain goes straight to Admin.
+
+**Blocked state:** if DCRs go unsubmitted past `DCR_MISS_GRACE_DAYS` with no approved leave, the
+account is blocked from plans, calls and expenses. Leave requests still work.
+
+---
+
+## 3. Navigation map
+
+```
+Splash
+Login ─► Device Status
+(tabs)
+├─ Home
+│   ├─ DCR:        Daily Plan · Monthly Plan · Dr Call · Dr Followup · Chemist Call
+│   │              · Chemist Followup · Add Doctor · Missed Calls · Visuals (moved from Marketing 2026-10-14) · Summary & Final Submission
+│   ├─ Marketing:  Orders · Monthly Stock · Targets · Secondary Sales · Gifts · Services
+│   ├─ Resources:  → Docs tab
+│   └─ Utility:    Expenses · Leave · Inbox · My Requests · Holidays · Financial-Year switch (Expenses and Leave moved here 2026-10-14)
+├─ Docs      (resource library)
+├─ Reports   (DCR · Tour Plan · Gift & Sales)
+└─ Team      (managers only: Inbox · Team activity · Request detail)
+```
+
+---
+
+## 4. Build roadmap (step by step)
+
+Order is by dependency: nothing in a later stage works without the earlier one.
+
+### Stage 0 — Finish the session layer (3–4 days) — **done**
+Login is wired; the rest of the session isn't.
+1. Splash: read the refresh token → `POST /identity/auth/refresh` → `/(tabs)` or `/login`.
+2. Authenticated API client: attach the access token, refresh on 401 once, sign out if refresh fails.
+3. Logout (`POST /identity/auth/logout`) with a profile/menu entry point.
+4. Replace the mock user: load `GET /identity/auth/me`; add the backend gaps in §7.
+5. Global states: no-connection banner, server-error screen, blocked-account banner.
+
+**Done when:** killing and reopening the app keeps you signed in; logout returns to Login;
+a revoked session lands on Login.
+
+### Stage 1 — Offline foundation (6–8 days) — *the riskiest stage* — **built 2026-10-07, needs a real-device test**
+1. Choose the local store (SQLite + a thin repository layer; see `../../../docs/engineering/tech-choices.md`).
+2. Local tables: `outbox` (clientId, kind, payload, status `DRAFT→QUEUED→SYNCED/FAILED`, dependsOn) plus cache tables for routes, doctors, chemists, products, holidays, leave balances.
+3. Reference-data pull: `GET /sync/pull` into the cache on login and on pull-to-refresh.
+4. Push engine: `POST /sync/push` in dependency order, per-record results, retry, failure surface.
+5. Draft backup: `PUT/GET /sync/drafts`.
+6. On-device geofence check (Haversine) before a call is saved; a FAIL flags the record, never blocks it.
+7. Connectivity hook (`online`, `lastSyncAt`) used by every Submit button.
+
+**Done when:** airplane-mode create → reconnect → records appear on the server exactly once.
+
+### Stage 2 — Home shell and gating (2–3 days) — **built 2026-10-07, phone-tested**
+1. Home with the four quadrants and tile grid.
+2. Gate state hook: "may I log today?" = today's Plan approved ∧ not blocked; disabled tiles explain why.
+3. Header: user name, designation, sync status chip.
+
+### Stage 3 — Planning (3–4 days) — **built 2026-10-07, phone-tested**
+Daily Plan, Monthly Plan, in-day change request, late-submission grant request. See §5.
+
+### Stage 4 — Daily call report (12–14 days)
+Dr Call, Dr Followup, Chemist Call, Chemist Followup, Add Doctor, Expenses, Leave,
+Summary & Final Submission. See §5.
+
+### Stage 5 — Team approvals (3–4 days)
+Inbox, team activity, request detail, approve/reject, bulk. Built early enough to test Stage 3–4
+end to end with two test accounts.
+
+### Stage 6 — Marketing (7–8 days)
+Orders, Monthly Stock, Visuals, Targets, Gifts, Services.
+
+### Stage 7 — Docs, Utility, Reports (6–7 days)
+Resource library, Holidays, Forms, Financial-Year switch, three reports.
+
+### Stage 8 — Hardening and release (7–10 days)
+Real-device pass (GPS accuracy, offline, low memory), development build, error handling pass,
+accessibility, performance, app icon/splash, EAS build, store listing.
+
+**Total:** about 50–60 working days solo (30–40 with heavy AI assistance).
+
+Suggested order if two people work in parallel: one on Stage 0–1 (foundation), one on screens
+against mock data (Stages 2–7), merging once the outbox exists.
+
+---
+
+## 5. Screens, step by step
+
+Legend — **Status:** ✅ built · 🔌 built + connected · ⬜ to build. **Net:** needs internet at tap
+time (online-only) vs **Queue:** saves locally and syncs later.
+
+### 5.1 Auth
+
+| # | Screen | Status | Purpose | Backend |
+|---|---|---|---|---|
+| 1 | Splash | ✅ (no session check) | Restore session, route to Login or tabs | `POST /identity/auth/refresh` |
+| 2 | Login | 🔌 | Employee code + password; device fields sent automatically | `POST /identity/auth/login` |
+| 3 | Device Status | ✅ | Pending / rejected / limit-reached explanation | reason from the login response |
+
+### 5.2 Home → DCR
+
+| # | Screen | Net | Fields and rules | Backend |
+|---|---|---|---|---|
+| 4 | Daily Plan | Submit: online · Save: offline | Date (Today / Tomorrow / calendar), working type (Field Work, Meeting, Conference, Strike), work-with (multi), routes, remarks. Submit deadline from Config (default 10:00). | `GET /territory/my-routes`, `POST /planning/daily`, `POST …/:id/submit`, `GET /planning/daily` |
+| 5 | Plan change (in-day) | online | Request a change to an approved Daily Plan | `POST /planning/daily/:id/changes`, `GET …/changes` |
+| 6 | Monthly Plan | Submit: online | Day-by-day plan for next month; deadline the 28th | `POST /planning/monthly`, `POST …/:id/submit` |
+| 7 | Late-submission request | online | Ask for a one-off exception after a missed deadline | `POST /planning/late-grants` |
+| 8 | Dr Call (list + new) | Queue | Doctor, working type, work-with, remarks, samples (product + qty, limited to the doctor's allocation), GPS captured on save | sync kind `DOCTOR_CALL`; cache from `GET /sync/pull` |
+| 9 | Dr Followup | Queue | Doctor + remarks | sync kind `DOCTOR_FOLLOWUP` |
+| 10 | Chemist Call (list + new) | Queue | Chemist, working type, work-with, remarks, GPS | sync kind `CHEMIST_CALL` |
+| 11 | Chemist Followup | Queue | Chemist + remarks | sync kind `CHEMIST_FOLLOWUP` |
+| 12 | Add Doctor | Queue | Category, name, address, email, specialty, qualification, map location, route | `GET/POST/PUT /field-master-data/doctors/added`, kind `NEW_DOCTOR` (goes to approval) |
+| 13 | Expenses | Queue | Type (Travel/Meal/Misc), amount in whole paise. TA/DA are computed by the server and never entered. | sync kind `EXPENSE` |
+| 14 | Leave — balances + requests | Request: online | Balances by leave type, request with attachments, status | `GET /hr/leave-balances/me`, `POST /hr/leaves`, `GET /hr/leaves/me`, `PUT /hr/leaves/:id`, `POST /hr/leaves/:id/attachments`, withdraw via `POST /approvals/:id/withdraw` |
+| 15 | Summary & Final Submission | Submit: online | Everything for the day in one view; failed records block the submit | sync kind `DCR_SUBMIT` (depends on every record of the day) |
+
+### 5.3 Home → Marketing
+
+| # | Screen | Net | Purpose | Backend |
+|---|---|---|---|---|
+| 16 | Orders (list + new + detail) | Queue | Chemist/Distributor order by product, Placed → Done/Cancelled | kind `ORDER`, `GET /sales/orders`, `…/:id`, `POST …/complete`, `POST …/cancel` |
+| 17 | Monthly Stock | Queue | Opening/closing counts per outlet and product; locked after month end | kind `MONTHLY_STOCK`, `GET /sales/monthly-stock`, `…/missing` |
+| 18 | Visuals | online, cached | E-detailing visuals, optionally per product. Choose a doctor, tick visuals, Submit (online, add-only; earlier picks locked), Show walks through the doctor's list (2026-10-10, typechecked, not run on a phone) | `GET /marketing/visuals`, `GET/POST /marketing/doctors/:id/visuals` |
+| 19 | ~~Campaigns~~ | removed from the app 2026-10-09 | — | — |
+| 20 | Targets | online | Own target; for managers the sum of the downline | `GET /marketing/targets/:userId`, `POST /marketing/targets` |
+| 21 | Doctor Gifts | Queue | Admin-allocated gifts; MR marks Done | `GET /field-activity/doctor-gifts`, kind `GIFT_DONE` |
+| 22 | Doctor Services | Queue | Request a service (Tour Package, Gift, Online Promotion, Others) + amount; goes to approval | `GET /field-activity/doctor-services`, kind `DOCTOR_SERVICE` |
+
+### 5.4 Docs and Utility
+
+| # | Screen | Purpose | Backend |
+|---|---|---|---|
+| 23 | Docs (payslips and shared documents) | Own payslips by financial year; documents Admin shares | `GET /payroll/me`, `GET /documents` — built |
+| 24 | Holiday List | National / Zone / HQ holidays; weekly off day is a rule, not a row | `GET /hr/holidays` |
+| 25 | ~~Forms~~ | removed from the product 2026-10-12 | — |
+| 26 | Financial-Year switch | Time-machine to a past FY; past years are read-only (header `X-Financial-Year`) | `GET /config/financial-year` |
+
+### 5.5 Reports tab
+
+| # | Screen | Purpose | Backend |
+|---|---|---|---|
+| 27 | DCR Report | Past daily call reports, with status | `GET /field-activity/dcr`, `…/:id` |
+| 28 | TP Report | Tour Plan status (Pending / Approved) | `GET /planning/daily`, `/monthly` |
+| 29 | Gift & Sales Report | Samples given, primary/secondary sales | `GET /sales/orders`, `…/monthly-stock`, `/field-activity/doctor-gifts` (assembled client-side) |
+
+### 5.6 Team tab (managers only)
+
+| # | Screen | Purpose | Backend |
+|---|---|---|---|
+| 30 | Approvals Inbox | Direct reports' requests; approve/reject, bulk | `GET /approvals/inbox`, `POST …/:id/approve`, `…/reject`, `POST /approvals/bulk` |
+| 31 | Team Activity | Whole downline, read-only past direct reports | `GET /approvals/team`, `GET /field-activity/dcr/team` |
+| 32 | Request Detail | Full request with history; reject needs a comment; geofence override on a flagged call | `GET /approvals/:id`, `POST /field-activity/dcr/:id/calls/:callId/override-geofence` |
+| 33 | My Requests | Status of my own submissions, withdraw | `GET /approvals/mine`, `POST …/:id/withdraw` |
+
+### 5.7 Shared pieces
+
+Profile / menu with logout (⬜), Blocked-account screen (⬜), Sync status sheet with failed records
+and retry (⬜), No-connection banner (⬜), Empty and error states (⬜).
+
+**Count:** 3 auth + 12 DCR + 7 marketing + 4 docs/utility + 3 reports + 4 team = **33 screens**,
+plus ~5 shared pieces. (`apps/fieldApp/CLAUDE.md` mentions about 44 once list/detail variants are
+counted separately.)
+
+---
+
+## 6. Screen build checklist (apply to every screen)
+
+1. Read the PRD section and the LLD for the module.
+2. Decide: **online-only** or **queue**. Plan Submit, DCR Final Submission and Leave request are online-only; calls, followups, expenses, orders and stock are queued.
+3. Build against mock data first, then wire to the API.
+4. Handle the five states: loading, empty, error, offline, gated/blocked.
+5. Money is integer paise end to end; never send TA/DA.
+6. Client-generated UUID for every queued record.
+7. Read the user only through `useCurrentUser()`.
+8. `npx tsc --noEmit` and `npx expo lint` pass before it counts as done.
+
+---
+
+## 7. Backend gaps to close (small, but they block screens)
+
+| Gap | Blocks |
+|---|---|
+| `isManager` / "has direct reports" flag on the user (login response or `/auth/me`) | Team tab visibility |
+| Designation **name** (login gives only `designationId`) | Home header, Team labels |
+| ~~A list of colleagues an MR can pick for Work With~~ — now `GET /identity/work-with` (`scope=managers` default, `scope=all`; each row has a ready `label` like "Asha Rao (ASM)"); `/identity/colleagues` is no longer on the backend | done |
+| A **"my team" list** for a manager (the people below them). Work With has no team scope, so the app takes the roster from a one-day read of `GET /reports/sales-dashboard`, which has one row per person in the downline (`offline/team.ts`) | works, but a small `GET /identity/team` (or `scope=team` on work-with) would be cleaner |
+| `ALLOW_UNPLANNED_DOCTOR_CALLS` is not in the settings the phone receives (`CONFIG_KEYS_FOR_PHONE` in `apps/api/src/syncSources.ts`), so the app always offers doctors outside the day's plan; with the rule off the server refuses each such call afterwards | add the key to that list |
+| CORS: add `http://localhost:8081` for web testing | Testing in the browser |
+| Reports: no dedicated aggregate endpoints | #29 is assembled client-side; fine for now |
+
+---
+
+## 8. Test plan
+
+- **Per screen:** the checklist in §6.
+- **Two accounts:** one MR, one ASM, so Plan → approve → call → Final Submission → approve is run for real.
+- **Offline script:** airplane mode through a full day, reconnect, verify exactly-once on the server.
+- **Edge cases:** blocked account, unapproved Plan, geofence FAIL, rejected device, expired refresh token, a record that fails server validation, duplicate push after a timeout.
+- **Devices:** one low-end Android, one iPhone; Expo Go for UI, a development build for GPS and background behavior.
+
+---
+
+## 9. Risks
+
+| Risk | Mitigation |
+|---|---|
+| Offline sync conflicts and partial failure | Build and test Stage 1 first; client UUIDs make pushes idempotent |
+| GPS accuracy indoors | Server treats a missing/poor fix as `UNVERIFIED`, not `FAIL` |
+| Expo Go can't do every native feature | Move to a development build when background GPS or a native DB is needed |
+| Backend gaps (§7) found late | Close them in Stage 0 |
+| Store review time | Start the store listing during Stage 7 |
+
+---
+
+## 10. Backend is ready, app doesn't use it yet (plan of 2026-10-12)
+
+Found by comparing the endpoints the backend exposes with the paths the app calls. Two corrections to §5: a **late-submission exception is granted** (Admin, or a manager for their team while `LATE_PLAN_GRANT_BY_MANAGER` is on) — an MR cannot ask for one through the API, so row 7 is really "a manager grants one from the Team tab, and the MR sees their own"; and **amend a Daily Plan** (`PATCH /planning/daily/:id/amend`) is a manager / Admin action, not an MR one.
+
+Each phase ends with `npx tsc --noEmit` and `npx expo lint`, then a phone test (EMP03 as the MR, an Admin or manager as the approver).
+
+| Phase | What | Endpoints | Where | Status |
+|---|---|---|---|---|
+| 1 | **Doctors on the Daily Plan and carry-over.** Choose the doctors to call on a Field Work day (limited to the plan's routes), see the doctors still owed from earlier days (locked, they cannot be dropped). Needs the plan saved first; save / submit / change need a connection, the doctor list is read from the cache. | `POST /planning/daily/doctors`, `GET /planning/daily/carry-over`; the synced `dailyPlans[].doctors` | `lib/planning.ts`, `components/plan-doctors-picker.tsx`, `app/daily-plan.tsx` **Built 2026-10-12, typechecked and linted, NOT yet run on a phone.** The doctor list is saved with Save draft / Submit (plan first, then doctors, then submit); picks off the plan's routes are dropped before sending; with no cached Field Master Data nothing is sent, so a missing cache cannot wipe saved picks; an unsent form keeps its picks on the phone. After submit or approval the doctors are listed read-only. The Dr Call picker still filters by route only, not by the planned doctors. |
+| 2 | **My Requests**: my own submissions with status, rejection reason and Withdraw. Online; read offline from the last copy. | `GET /approvals/mine` | new `app/my-requests.tsx`, `lib/approvals.ts` (`listMine`, `withdrawRequest`), `components/approval-row.tsx` (`own`), Withdraw on `approval/[id].tsx`, a Utility tile | **Built and phone-tested 2026-10-12:** the Utility tile, the list, the filter chips (incl. the empty state), the request detail with its history, Withdraw on a waiting Daily Plan (confirm card, list reloads to "Withdrawn"), and the offline copy ("You're offline. Showing the list from …"). **Not seen:** a rejected row with its reason. Filters are client-side over the latest 100; a rejected row shows the manager's reason from `lastAction`; the list reloads when you come back from a request. |
+| 3a | Manager **grants a late submission** to a team member (plan type, date or month, required reason), list and revoke. Read the `LATE_PLAN_GRANT_BY_MANAGER` setting first. | `POST/GET /planning/late-grants`, `POST …/:id/revoke` | `app/late-grants.tsx`, `lib/late-grants.ts`, `components/team-tools.tsx` (links on the Team tab) | **Built 2026-10-12, typechecked and linted, NOT yet run on a phone (needs a manager login).** Team members come from the manager's team roster (`offline/team.ts`, see §7); a grant can last 24h, 48h or 7 days (`expiresAt`); an unused grant made by you can be revoked; the server's message is shown when the manager switch is off. |
+| 3b | Manager / Admin **amends** a team member's Daily Plan (whole day plus a required reason). | `PATCH /planning/daily/:id/amend` | `app/amend-plan.tsx`, "Amend this plan" on a Daily Plan request (`approval/[id].tsx`), `apiPatch` in `lib/api.ts` | **Built 2026-10-12, typechecked and linted, NOT yet run on a phone.** Changes working type and remarks only: **there is no endpoint that lists another employee's routes**, so a Field Work day keeps its routes and a day with none cannot become Field Work (backend gap — e.g. `GET /territory/users/:id/routes` for a manager). The request detail also shows the plan's doctor count now. |
+| 3c | **Team DCRs**: read-only list of the downline's reports, linking to the DCR detail. | `GET /field-activity/dcr/team` | `app/team-reports.tsx` ("Daily reports"), `lib/team.ts` | **Built 2026-10-12, typechecked and linted, NOT yet run on a phone.** By month, filter by team member, opens the existing report detail. |
+| 3d | **Team sales dashboard** for managers, beside Targets. | `GET /reports/sales-dashboard` | `app/team-reports.tsx` ("Sales & compliance") | **Built 2026-10-12, typechecked and linted, NOT yet run on a phone.** Put beside the team daily reports rather than under Targets: per employee working days, plan and report compliance, TA/DA, target against achieved, plus the team total, by month. |
+| 4 | ~~Missing monthly stock banner~~ | — | — | **Dropped:** the Monthly Stock tab was removed from the product (`docs/mobile/orders-and-stock.md`). A manager still sees outlets with no count on Team → Stock & secondary. |
+| 6 | **Docs-audit gaps closed 2026-10-13:** closed financial year (banner, `FY_CLOSED`); an approver **corrects a pending new doctor** (`PATCH /field-master-data/doctors/:id/review`, `app/review-doctor.tsx`, opened from the request); a manager **sets a doctor's visit target** (`PATCH …/doctors/:id/targets`, `app/team-doctors.tsx`, Team → Visit targets) and can **remove a target** on the Targets screen; own TA/DA and DCR report reads. | see each | `lib/financial-year.ts`, `lib/added-doctors.ts`, `lib/my-reports.ts`, `components/reports.tsx` | **Built, typechecked and linted, NOT yet run on a phone** (the doctor correction and visit targets need a manager login). The approver cannot change the doctor's route: no endpoint lists another employee's routes. |
+| 7 | **Team tab redesign (2026-10-13):** three sections replace the tile grid — **Approvals** (To approve / All team requests, type chips with counts, filters by person, period, status, overdue; bulk with "Select all"), **People** (hierarchy drill-down for RSM / ZSM with a roll-up per manager, today's state per person, role filter, Unblock on a blocked row) and **Reports** (a plain list plus Manage). The person page has quick actions and "See their…" links that open the existing screens filtered to that person (`?userId=`). | `/approvals/inbox`, `/approvals/team` (`kind`, `status`, `submitterId`, `from`, `to`), `/team/members`, `/team/today` | `app/(tabs)/team.tsx`, `components/team/*`, `hooks/use-team-board.ts`, `lib/team-tree.ts`, `components/team/user-filter.tsx`; `team-tools.tsx` removed | **Built, typechecked and linted, NOT yet run on a phone** (needs an ASM, RSM and ZSM login). Roll-ups are counted on the phone (the server has no per-manager totals), paging through up to 20 pages of 100. Not built: the tablet two-pane layout. |
+| 5 | **Phone pass** over everything built but never run on a phone: Stage 6, Stage 7, the approved-plan and blocked Home states, and the Stage 5 gaps (read-only deeper levels, bulk reject, an Admin-level approval). | — | — | Not started |
+
+**Still waiting on the backend (nothing to build):** birthday / anniversary reminders, push notifications (a sender and a device-token store), and an endpoint that lists another employee's routes (so Amend and Correct doctor can change routes).
+
+**Note on §5 rows 4–5 and 7:** the Daily Plan no longer has a working-type / routes / work-with form and there is no in-day change request or late-submission request from the MR — the server removed those on 2026-10-12 (`docs/mobile/dailyplan.md`). The Daily Plan screen keeps only the doctor picker; a late exception is granted by a manager or Admin.
+
+**Admin-only on the server, not for the app:** payroll, attendance, salary, TA/DA reports, sales statements, distributor payments and statements, CTC and promotions, device approvals, financial-year close.
+
+### 10.1 Backend merge of 2026-10-12 (monthly-plan rules, Work With) and the app's response
+
+The backend gained these rules (`docs/mobile/monthlyplan.md` is its contract for the phone); the app follows them as of 2026-10-12:
+
+- **No approved Monthly Plan = no work that month** (`MONTHLY_PLAN_NOT_APPROVED`). The day gate (`offline/day.ts`, `cause: 'MONTHLY_PLAN'`) closes the plan-gated tiles; Home, Daily Plan, call and followup screens and Summary say so and open the Monthly Plan on **this month** (`?month=current`). Marketing, Leave, Reports and the Monthly Plan itself stay open. **Phone-tested** (Home card, Daily Plan banner, locked Dr Call tile, link to this month).
+- **Work With** uses `GET /identity/work-with` (Managers / All colleagues, search, "Name (ASM)" labels), cached by `offline/colleagues.ts`. A half answer (one of the two requests failing) never replaces a complete cached list.
+- **Calls to a doctor outside the day's plan** are allowed and flagged "Not in plan" (picker order, notice, Summary, request view). See §7 for the setting the phone cannot see.
+- **Late-submission exceptions** take an exact `expiresAt`.
+- **Doctor visits** show planned days and "missed since"; **Monthly Stock** shows missing counts (own outlets once the month's counts have loaded; a manager also sees the team's).
+- Not used by any screen yet: `updateDoctorTargets` (`PATCH /field-master-data/doctors/:id/targets`) and `deleteTarget`.
+- **Test accounts:** a compliance block (`DCR_MISSED_NO_LEAVE`) hit EMP05 and GRN0011 on 2026-10-12 and was cleared in the dev DB; GRN0011 has no Monthly Plan for October (deadline passed), so planning needs an Admin late-submission exception first.
+
+### 10.2 Server changes of 2026-10-14/15 and the app's response (2026-10-15)
+- **Daily Plan** (`daily-plan.tsx`, `lib/planning.ts`): Work With and the doctors are editable (one **Save changes**, `POST /planning/daily/plan`); the working type is shown read-only by product decision, and Work With is offered only on Field Work and Doctor Campaign days. "Changed from monthly" chip, "Show the monthly plan" and **Back to monthly plan**; offline edits kept on the phone; a `400` naming `workWith` or `doctorIds` marks that part in red. Tested on a phone as GRN0011 (save, offline save/submit, submit, withdraw, reject with reason, resubmit) and against the web approval screen.
+- **Orders**: discounts shown (line discount, net amounts, order discount); tested against a web-discounted order.
+- **Manager** (tested as EMP05 where noted): Team tab also appears for a manager with no approvals yet (`probeHasTeam` asks `team-suggest` about oneself: 403 = not a manager) - tested; Work With lists the manager's downline (`useDownline`) - built, not tested; team-suggest fill, per-person plan status and **Refresh from team** - built, not tested; Targets shows the team total, "By MR" and no "Me" - tested; "Changed from monthly" chip on Team plans - built, not seen on a changed day.
+- **Not tested** because the data is missing: a trip stay/transit day, a Doctor Campaign day, a reopened plan, a server-refused doctor (red field error), and the manager's own Daily Plan (EMP05 has no routes; the web Route page crashes on `normalizeName` when a route has no destination, so a route cannot be assigned from the portal).
+- **Backend still owed:** an `isManager`/designation level on login (the phone infers it), and a way to list a team member's doctors for the manager's doctor picker (the phone's doctor list holds only the manager's own).
+
+### 10.3 Server changes of 2026-10-23 and the app's response (2026-10-23)
+- **A manager edits a waiting Tour Plan** (`docs/mobile/monthlyplan.md` rule 19, section 6). **Edit plan** on a `MONTHLY_PLAN` request that is `SUBMITTED` and yours to decide (`approval/[id].tsx`, never on your own) opens `app/amend-monthly-plan.tsx`: the employee's month on the calendar and day list, weekly offs and holidays locked, trip stay/return days opened from their first day; each day takes the employee's routes (`GET /planning/monthly/:id/routes`, plus any route already on the plan), work with (the colleagues list without the plan's owner, with you added) and remarks. **Save changes** sends the whole month and a required reason to `PATCH /planning/monthly/:id/amend`; a `400` names the day, "changed while you were editing" reloads the plan and keeps the reason. The edits (who, when, why, and each changed day before and after) show on the request (`approval-summary.tsx`) and on the employee's Tour Plan (`components/plan-amendments.tsx`). The push `PLAN_AMENDED_MONTHLY_PLAN` already opened the Tour Plan (`lib/push.ts`). **Phone-tested 2026-10-23** (EMP05 editing GRN0011's seeded November plan, checked in the dev DB): Edit plan only on the waiting request and gone once approved, disabled offline; the employee's own routes with their types; work with lists "you" and not the owner; a locked holiday can't be opened; a stay day sends you to the trip's first day; a day changed and a trip shortened (19 → 18 Nov, the server rewrote the return day); a missing reason refused; both edits shown to the manager and to GRN0011 ("Manager · date", before/after with work with and the return date); GRN0011 got both Inbox messages and has no edit. **Not tested:** tapping the push itself (Expo Go has no push token here), and the "changed while you were editing" reload.
+- **Deactivated employee** (`docs/mobile/account.md`): queued records stay on the phone, as the app already did. When the server refuses the session refresh, Login now says "You've been signed out" (`clearSession({ byServer: true })`, `takeSignedOutNotice` in `lib/session.ts`). **Built, NOT yet run on a phone.**
+- **Products** (Marketing): the active catalogue with MRP, PTR and PTS from the field master data pull, searchable, offline (`app/products.tsx`). **Phone-tested 2026-10-23:** list A–Z with ₹ prices, search and "no match", offline, and "—" for a missing price (XYZ-500's MRP cleared in the dev DB for the test, then put back).
+- **Visuals:** the "Show to doctor" picker always has a search box (name, speciality or area), however few doctors there are (`searchable` on `OutletPicker`). **Phone-tested 2026-10-23.**
+- **Doctor photo** (`docs/mobile/doctors.md` rule 10, section 6; server 2026-10-23): `photoUrl` read from the snapshot and the doctor APIs and shown in a circle, with initials when there is none (`components/doctor-avatar.tsx`; `avatars` on `OutletPicker`): Dr Call, Dr Followup, Services, Visuals, the Daily Plan doctor list, Missed Calls, Team doctors, Add Doctor and the New Doctor approval. Add Doctor takes an optional photo (camera or gallery, `expo-image-picker`, square, JPG/PNG/WebP up to 5 MB); it waits with the queued add (`offline/doctor-photos.ts`, keyed by `clientId`) and goes up with `PUT /field-master-data/doctors/added/:id/photo` after the add has synced (run at the end of every push; offline waits, a refusal or 5 failures give up with the reason shown). A doctor already sent can have its photo added, changed or removed while it waits or was sent back (no resubmit); not once approved. `apiUpload` takes `PUT`. **Phone-tested:** initials and a photo in the doctor pickers (a test photo set in the dev DB, then cleared). **Open issue:** on the Realme test phone (Expo Go) the app restarts after choosing a photo; not yet explained (the log shows no crash and no process kill). Picking and uploading are therefore not tested.
+- **Approval rows** show what a request is about (`subject`, server 2026-10-23), e.g. "Nov 2026" or a doctor's name and area, and a **View →** button (the whole row still opens it; hidden while selecting several). **Not run on a phone.**
+- **Visuals:** with a doctor chosen, **Submit** sits at the top under the doctor instead of after every visual. **Not run on a phone.**
+- **Holiday List:** the whole financial year at once under month headings, days already gone greyed; the month stepper is gone (one `GET /hr/holidays` for the year, the server allows up to 400 days). **Phone-tested 2026-10-23.**

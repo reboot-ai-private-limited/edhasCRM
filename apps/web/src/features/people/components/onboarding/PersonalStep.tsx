@@ -1,0 +1,48 @@
+import type { ReactNode } from 'react';
+import { FormField } from '@/components/ui/FormField';
+import { Input } from '@/components/ui/Input';
+import { Grid, StepFrame, type StepProps } from './StepFrame';
+
+export function PersonalStep({ form, update, errors, photo }: StepProps & { photo?: ReactNode }) {
+  const invalid = (key: string) => (errors[key] ? true : undefined);
+  return (
+    <StepFrame title="Personal details">
+      {photo ? <div className="mb-5">{photo}</div> : null}
+      <Grid>
+        <FormField label="Full name" htmlFor="p-name" error={errors['name']}>
+          <Input id="p-name" value={form.name} onChange={(e) => update({ name: e.target.value })} aria-invalid={invalid('name')} />
+        </FormField>
+        <FormField label="Guardian name" htmlFor="p-guardian" error={errors['guardianName']}>
+          <Input id="p-guardian" value={form.guardianName} onChange={(e) => update({ guardianName: e.target.value })} aria-invalid={invalid('guardianName')} />
+        </FormField>
+        <FormField label="Mobile number" htmlFor="p-mobile" error={errors['mobileNumber']}>
+          <Input id="p-mobile" inputMode="numeric" maxLength={10} value={form.mobileNumber} onChange={(e) => update({ mobileNumber: e.target.value.replace(/\D/g, '') })} aria-invalid={invalid('mobileNumber')} />
+        </FormField>
+        <FormField label="Alternate mobile (optional)" htmlFor="p-alt" error={errors['alternateMobile']}>
+          <Input id="p-alt" inputMode="numeric" maxLength={10} value={form.alternateMobile} onChange={(e) => update({ alternateMobile: e.target.value.replace(/\D/g, '') })} aria-invalid={invalid('alternateMobile')} />
+        </FormField>
+        <FormField label="Date of birth" htmlFor="p-dob" error={errors['dateOfBirth']}>
+          <Input id="p-dob" type="date" value={form.dateOfBirth} onChange={(e) => update({ dateOfBirth: e.target.value })} aria-invalid={invalid('dateOfBirth')} />
+        </FormField>
+        <FormField label="Joining date (optional)" htmlFor="p-doj" error={errors['dateOfJoining']}>
+          <Input id="p-doj" type="date" value={form.dateOfJoining} onChange={(e) => update({ dateOfJoining: e.target.value })} aria-invalid={invalid('dateOfJoining')} />
+        </FormField>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" className="size-4 accent-[var(--color-accent)]" checked={form.onProbation} onChange={(e) => update({ onProbation: e.target.checked })} />
+          On probation (leave is paid during it)
+        </label>
+        {form.onProbation && (
+          <FormField label="Probation, months (optional)" htmlFor="p-prob" error={errors['probationMonths']} hint="Empty: the system's probation length.">
+            <Input id="p-prob" inputMode="numeric" value={form.probationMonths} onChange={(e) => update({ probationMonths: e.target.value.replace(/\D/g, '') })} aria-invalid={invalid('probationMonths')} />
+          </FormField>
+        )}
+        <FormField label="ESI number (optional)" htmlFor="p-esi" error={errors['esiNumber']}>
+          <Input id="p-esi" inputMode="numeric" maxLength={17} value={form.esiNumber} onChange={(e) => update({ esiNumber: e.target.value.replace(/\D/g, '') })} aria-invalid={invalid('esiNumber')} />
+        </FormField>
+        <FormField label="EPF number (optional)" htmlFor="p-epf" error={errors['epfNumber']}>
+          <Input id="p-epf" maxLength={30} value={form.epfNumber} onChange={(e) => update({ epfNumber: e.target.value.toUpperCase() })} aria-invalid={invalid('epfNumber')} />
+        </FormField>
+      </Grid>
+    </StepFrame>
+  );
+}

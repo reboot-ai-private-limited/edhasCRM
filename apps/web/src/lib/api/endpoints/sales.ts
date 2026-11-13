@@ -1,0 +1,78 @@
+import type { SecondaryRollupDto, SecondaryReportDto, SecondaryStockMonthDto, StockCountsImpactDto, DistributorBalanceDto, DistributorOutstandingDto, CompleteOrderDto, EditOrderDto, PlaceOrderForDto, SecondaryAttachmentDto, DistributorPaymentDto, DistributorStatementDto, SaveDistributorStatementDto, DistributorPaymentsDto, DistributorPaymentTotalDto, MissingStockRowDto, RecordDistributorPaymentDto, InvoiceDetailDto, InvoiceRowDto, InvoiceStatus, SetInvoiceNumberDto } from '@edhas/contracts';
+import { request } from '../client';
+
+/** One order as `GET /sales/orders` returns it; the distributor's Orders tab shows only these fields. */
+export interface DistributorOrderRow {
+  id: string;
+  userId: string;
+  orderDate: string;
+  status: 'PLACED' | 'DONE' | 'CANCELLED';
+  totalAmountPaise: number;
+  remarks: string | null;
+  items: unknown[];
+}
+
+export interface EditSecondaryStockBody {
+  userId: string;
+  month: string;
+  reason: string;
+  lines: Array<{ distributorId: string; productId: string; openingQty: number; primaryQty: number; issuedQty: number }>;
+}
+
+export const salesApi = {
+  /** Admin or Accountant. One distributor's payments in a range (both ends inclusive), with the collected and ordered totals. */
+  distributorPayments: (token: string, query: { distributorId: string; from: string; to: string }, signal?: AbortSignal) =>
+    request<DistributorPaymentsDto>('/sales/distributor-payments', { token, query: { ...query }, signal }),
+  /** Admin or Accountant. What each distributor paid in a range (recorded payments only); distributors with none are left out. */
+  distributorPaymentTotals: (token: string, query: { from: string; to: string }, signal?: AbortSignal) =>
+    request<DistributorPaymentTotalDto[]>('/sales/distributor-payments/totals', { token, query: { ...query }, signal }),
+  /** Admin or Accountant. What each distributor was delivered (Done orders, free units excluded) and paid, all time; the list adds each one's opening dues. */
+  distributorOutstanding: (token: string, signal?: AbortSignal) => request<DistributorOutstandingDto>('/sales/distributor-payments/outstanding', { token, signal }),
+  distributorBalances: (token: string, signal?: AbortSignal) => request<DistributorBalanceDto[]>('/sales/distributor-payments/balances', { token, signal }),
+  /** Admin. One distributor's month by product: field counts, orders, the saved statement and the figures that follow. */
+  distributorStatement: (token: string, query: { distributorId: string; month: string }, signal?: AbortSignal) =>
+    request<DistributorStatementDto>('/sales/distributor-statement', { token, query: { ...query }, signal }),
+  saveStatement: (token: string, body: SaveDistributorStatementDto) => request<{ added: number; changed: number }>('/sales/distributor-statement', { method: 'POST', token, body }),
+  /** An MR's month of secondary stock by distributor and product (2026-11-05): opening, primary, issued, closing and value at PTS. Self, the manager above, or Admin. */
+  secondaryStock: (token: string, query: { userId: string; month: string }, signal?: AbortSignal) => request<SecondaryStockMonthDto>('/sales/secondary-stock', { token, query: { ...query }, signal }),
+  /** The manager above an MR (or Admin) corrects the figures the MR sent, while the month waits for approval. A reason is required. */
+  editSecondaryStock: (token: string, body: EditSecondaryStockBody) => request<{ changed: number }>('/sales/secondary-stock', { method: 'PATCH', token, body }),
+  /** A manager's month of team secondary sales (live before it is sent, the saved snapshot after) with the MR reports it rests on. The manager, the manager above, or Admin. */
+  secondaryRollup: (token: string, query: { userId: string; month: string }, signal?: AbortSignal) => request<SecondaryRollupDto>('/sales/secondary-rollup', { token, query: { ...query }, signal }),
+  /** The approved secondary of the MRs below a manager (all MRs for Admin), summed by distributor and product. */
+  secondaryReport: (token: string, query: { month: string; managerId?: string | undefined }, signal?: AbortSignal) => request<SecondaryReportDto>('/sales/secondary-report', { token, query: { ...query }, signal }),
+  /** Admin: deletes the employee's month of secondary sales, its files and the approval request, so they can enter and send it again. */
+  deleteSecondaryMonth: (token: string, query: { userId: string; month: string }) => request<{ distributors: number; lines: number; files: number; requestRemoved: boolean }>('/sales/stock-counts', { method: 'DELETE', token, query: { ...query } }),
+  /** Admin: what deleting the month would remove, for the confirmation. */
+  stockCountsImpact: (token: string, query: { userId: string; month: string }, signal?: AbortSignal) => request<StockCountsImpactDto>('/sales/stock-counts/impact', { token, query: { ...query }, signal }),
+  /** Multipart: `file`, `month` and, for someone else's month, `userId`. Any number of files per month. */
+  addSecondaryFile: (token: string, body: FormData) => request<SecondaryAttachmentDto>('/sales/employee-secondary/attachments', { method: 'POST', token, body }),
+  removeSecondaryFile: (token: string, id: string) => request<null>(`/sales/employee-secondary/attachments/${id}`, { method: 'DELETE', token }),
+
+  recordPayment: (token: string, body: RecordDistributorPaymentDto) => request<DistributorPaymentDto>('/sales/distributor-payments', { method: 'POST', token, body }),
+  cancelPayment: (token: string, id: string, reason: string) => request<DistributorPaymentDto>(`/sales/distributor-payments/${id}/cancel`, { method: 'POST', token, body: { reason } }),
+  /** A distributor's orders in a range, newest first, whoever placed them (Admin). */
+  distributorOrders: (token: string, query: { distributorId: string; from: string; to: string }, signal?: AbortSignal) =>
+    request<DistributorOrderRow[]>('/sales/orders', { token, query: { outletType: 'DISTRIBUTOR', outletId: query.distributorId, from: query.from, to: query.to }, signal }),
+
+  /** ADMIN only (HR and Accountant get 403). `month` is `YYYY-MM`. */
+  missingStock: (token: string, query: { month: string }, signal?: AbortSignal) =>
+    request<MissingStockRowDto[]>('/sales/monthly-stock/missing', { token, query: { ...query }, signal }),
+
+  /** Admin or the Accountant adds an order for a field employee. */
+  placeOrderFor: (token: string, body: PlaceOrderForDto) => request<{ serverId: string; totalAmountPaise: number }>('/sales/orders/on-behalf', { method: 'POST', token, body }),
+  /** Admin or the Accountant changes a PLACED order's lines and remarks; a 409 if it is no longer PLACED. */
+  editOrder: (token: string, id: string, body: EditOrderDto) => request<{ id: string; status: string }>(`/sales/orders/${id}`, { method: 'PATCH', token, body }),
+
+  /** `PLACED` → `DONE` with the invoice number, by Admin or the Accountant; a second call is a 409, and so is a used number. */
+  completeOrder: (token: string, id: string, body: CompleteOrderDto) => request<{ id: string; status: string }>(`/sales/orders/${id}/complete`, { method: 'POST', token, body }),
+  /** Gives a Done order from before invoices its number. */
+  setInvoiceNumber: (token: string, id: string, body: SetInvoiceNumberDto) => request<{ id: string; status: string }>(`/sales/orders/${id}/invoice-number`, { method: 'PATCH', token, body }),
+  /** Invoices (Done orders with a number) with paid and due; no dates = all time. */
+  invoices: (token: string, query: { distributorId?: string; status?: InvoiceStatus; from?: string; to?: string }, signal?: AbortSignal) =>
+    request<InvoiceRowDto[]>('/sales/invoices', { token, query: { ...query }, signal }),
+  /** One invoice (the order's id) with its lines, for printing. */
+  invoice: (token: string, orderId: string, signal?: AbortSignal) => request<InvoiceDetailDto>(`/sales/invoices/${orderId}`, { token, signal }),
+  /** `PLACED` → `CANCELLED`, by the MR who placed it or Admin. */
+  cancelOrder: (token: string, id: string) => request<{ id: string; status: string }>(`/sales/orders/${id}/cancel`, { method: 'POST', token }),
+};

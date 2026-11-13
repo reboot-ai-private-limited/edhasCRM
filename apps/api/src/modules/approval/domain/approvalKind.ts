@@ -1,0 +1,52 @@
+import type { RoleName } from '@edhas/contracts';
+import type { TransactionContext } from '@/shared/db/transaction.port.js';
+import type { ApprovalAction, ApprovalRequest, ApprovalStatus } from './approvalRequest.entity.js';
+
+/** What the owning module is told after every status change it didn't initiate itself. */
+export interface ApprovalStatusChange {
+  requestId: string;
+  kind: string;
+  recordId: string;
+  submitterId: string;
+  previousStatus: ApprovalStatus;
+  status: ApprovalStatus;
+  /** The action that caused the change, as appended to the history. */
+  action: ApprovalAction;
+  request: ApprovalRequest;
+}
+
+/** What a request is about, for a list row: "Dr Rao" over "Siliguri · Naxalbari". */
+export interface ApprovalSubject {
+  title: string;
+  subtitle: string | null;
+}
+
+/** What an owning module declares about one kind of request when it registers it. */
+export interface ApprovalKindDefinition {
+  kind: string;
+  /**
+   * Who may act at the final stage. Always includes `ADMIN` (Admin is the superuser of every
+   * workflow); Leave adds `HR`.
+   */
+  finalApproverRoles: RoleName[];
+  /**
+   * Who may decide at any stage, ahead of the manager (`ADMIN_OVERRIDE`), besides Admin, who always may. Must be a subset of
+   * `finalApproverRoles`, so the kind's queue already lists the role. Plans add `HR`; Leave does not (manager, then HR).
+   */
+  overrideRoles?: RoleName[];
+  /**
+   * The kind never has a final stage: the manager's approval is the decision, whatever
+   * `APPROVAL_MANAGER_ONLY_KINDS` says. For a kind whose design is "the manager decides" (no kind uses it today), as opposed to one Admin may relax later through that setting.
+   */
+  managerOnly?: boolean;
+  /** What each record is about, for the rows of a list (one batched call per page); a record left out shows by its kind alone. */
+  describeRecords?: (recordIds: string[]) => Promise<Map<string, ApprovalSubject>>;
+  /**
+   * Runs inside the same MongoDB transaction as the status change, on every decision, withdrawal
+   * and reopen — not on submit/resubmit, which the owning module starts itself. Write through
+   * `ctx` so both commit or neither does; throwing rolls the status change back too. May run
+   * more than once on a transient-error retry, so keep it to database writes on `ctx` — no
+   * notifications or other external side effects here.
+   */
+  onStatusChange?: (change: ApprovalStatusChange, ctx: TransactionContext) => Promise<void>;
+}

@@ -1,0 +1,176 @@
+'use client';
+
+import type { HolidayScope } from '@edhas/contracts';
+import { Pencil, Plus, Trash2, Upload } from 'lucide-react';
+import { useState } from 'react';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { DataState } from '@/components/ui/DataState';
+import { Input } from '@/components/ui/Input';
+import { Select } from '@/components/ui/Select';
+import { useTerritoryDirectory } from '@/features/territory/hooks/useTerritoryDirectory';
+import { toErrorState } from '@/lib/api/toErrorState';
+import { istDate } from '@/lib/dates';
+import { financialYearOf, financialYearRange } from '@/lib/financial-year';
+import { useFilterParams } from '@/lib/hooks/useFilterParams';
+import { useFinancialYear, useIsReadOnly } from '@/lib/useFinancialYear';
+import { useDeleteHoliday, useHolidays, useWeeklyOffs } from '../hooks/useHolidays';
+import { HOLIDAY_SCOPE_LABEL, appliesTo, dateSpan, groupCalendarByMonth, rangeError, type CalendarKind, type HolidayEntry } from '../lib/holidays';
+import { HolidayFormDialog } from './HolidayFormDialog';
+import { HolidayImportDialog } from './HolidayImportDialog';
+
+const ANY = 'all';
+const KIND_OPTIONS: { value: CalendarKind; label: string }[] = [
+  { value: 'ALL', label: 'Holidays and weekly offs' },
+  { value: 'HOLIDAYS', label: 'Holidays only' },
+  { value: 'WEEKLY_OFFS', label: 'Weekly offs only' },
+];
+const monthLabel = (month: string) => new Intl.DateTimeFormat('en-IN', { timeZone: 'UTC', month: 'long', year: 'numeric' }).format(new Date(`${month}-01T00:00:00Z`));
+
+/** The holiday calendar; a holiday added for several days shows as one line. The range defaults to the financial year in view, and the API lists at most 400 days at a time. */
+export function HolidaysTab() {
+  const readOnly = useIsReadOnly();
+  const { year } = useFinancialYear();
+  const defaults = financialYearRange(year ?? financialYearOf(istDate()));
+  const { values, update } = useFilterParams(['from', 'to', 'scope', 'zoneId', 'hqId', 'kind', 'sundays']);
+  const from = values.from || defaults.from;
+  const to = values.to || defaults.to;
+  const range = rangeError(from, to);
+  const directory = useTerritoryDirectory();
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<HolidayEntry | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [removing, setRemoving] = useState<HolidayEntry | null>(null);
+  const remove = useDeleteHoliday(() => setRemoving(null));
+
+  const holidays = useHolidays(
+    { from, to, ...(values.scope && { scope: values.scope as HolidayScope }), ...(values.zoneId && { zoneId: values.zoneId }), ...(values.hqId && { hqId: values.hqId }) },
+    !range,
+  );
+  const kind = (KIND_OPTIONS.find((o) => o.value === values.kind)?.value ?? 'ALL') as CalendarKind;
+  // Weekly offs are the same for everyone, so a scope, zone or HQ filter (which narrows holidays) hides them.
+  const placeFiltered = Boolean(values.scope || values.zoneId || values.hqId);
+  const weeklyOffs = useWeeklyOffs({ from, to }, !range && kind !== 'HOLIDAYS' && !placeFiltered);
+  const groups = groupCalendarByMonth(kind === 'WEEKLY_OFFS' ? [] : (holidays.data ?? []), placeFiltered ? [] : (weeklyOffs.data ?? []), { kind, showEveryWeek: values.sundays === '1' });
+
+  return (
+    <Card
+      title="Holidays"
+      description="National holidays apply to everyone; Zone and HQ holidays only to employees there (an employee's HQ is set on their Leave tab)."
+      actions={
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" onClick={() => setUploading(true)}>
+            <Upload aria-hidden className="size-4" /> Upload list
+          </Button>
+        <Button onClick={() => setAdding(true)} disabled={readOnly} title={readOnly ? 'A past financial year is read-only' : undefined}>
+          <Plus aria-hidden className="size-4" /> New holiday
+        </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-wrap items-center gap-3 border-b border-border p-4">
+        <div className="flex items-center gap-2 text-sm text-text-muted">
+          <label htmlFor="holiday-from">From</label>
+          <Input id="holiday-from" type="date" value={from} onChange={(e) => update({ from: e.target.value })} className="w-40" />
+          <label htmlFor="holiday-to">to</label>
+          <Input id="holiday-to" type="date" value={to} onChange={(e) => update({ to: e.target.value })} className="w-40" aria-invalid={range ? true : undefined} />
+        </div>
+        <div className="w-40">
+          <Select aria-label="Applies to" value={values.scope || ANY} options={[{ value: ANY, label: 'Any scope' }, ...(['NATIONAL', 'ZONE', 'HQ'] as const).map((s) => ({ value: s, label: HOLIDAY_SCOPE_LABEL[s] }))]} onValueChange={(v) => update({ scope: v === ANY ? '' : v })} />
+        </div>
+        <div className="w-44">
+          <Select aria-label="Zone" value={values.zoneId || ANY} options={[{ value: ANY, label: 'Any zone' }, ...directory.zoneOptions]} onValueChange={(v) => update({ zoneId: v === ANY ? '' : v })} />
+        </div>
+        <div className="w-52">
+          <Select aria-label="HQ" value={values.hqId || ANY} options={[{ value: ANY, label: 'Any HQ' }, ...directory.hqOptions]} onValueChange={(v) => update({ hqId: v === ANY ? '' : v })} />
+        </div>
+        <div className="w-56">
+          <Select aria-label="Show" value={kind} options={KIND_OPTIONS} onValueChange={(v) => update({ kind: v === 'ALL' ? '' : v })} />
+        </div>
+        {kind !== 'HOLIDAYS' ? (
+          <label className="flex items-center gap-2 text-sm text-text-muted">
+            <input type="checkbox" checked={values.sundays === '1'} onChange={(e) => update({ sundays: e.target.checked ? '1' : '' })} />
+            Show every-week days off (all Sundays)
+          </label>
+        ) : null}
+        {values.from || values.to || values.scope || values.zoneId || values.hqId || values.kind || values.sundays ? (
+          <Button variant="ghost" size="sm" onClick={() => update({ from: '', to: '', scope: '', zoneId: '', hqId: '', kind: '', sundays: '' })}>
+            Reset
+          </Button>
+        ) : null}
+        {range ? <p role="alert" className="basis-full text-[13px] text-danger-fg">{range}</p> : null}
+      </div>
+
+      <DataState
+        isLoading={!range && (holidays.isLoading || weeklyOffs.isLoading)}
+        error={holidays.error ? toErrorState(holidays.error, () => void holidays.refetch()) : weeklyOffs.error ? toErrorState(weeklyOffs.error, () => void weeklyOffs.refetch()) : null}
+        isEmpty={!range && !holidays.isLoading && !weeklyOffs.isLoading && groups.length === 0}
+        empty={{ title: 'No holidays in this range', description: 'Add one, or widen the dates.' }}
+      >
+        <div className="divide-y divide-border">
+          {groups.map(({ month, rows }) => (
+            <section key={month} aria-label={monthLabel(month)} className="px-5 py-4">
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-text-subtle">{monthLabel(month)}</h3>
+              <ul className="space-y-1">
+                {rows.map((row) => {
+                  if (row.kind === 'WEEKLY_OFF') {
+                    return (
+                    <li key={`off-${row.date}`} className="flex flex-wrap items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-surface-hover">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-text">
+                          {row.label} <span className="font-normal text-text-subtle">· {dateSpan(row.date, row.date)}</span>
+                        </p>
+                        <p className="text-[13px] text-text-muted">All employees · set under Settings → Weekly days off</p>
+                      </div>
+                      <Badge tone="neutral">Weekly off</Badge>
+                    </li>
+                    );
+                  }
+                  const h = row.entry;
+                  return (
+                  <li key={h.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-surface-hover">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-text">
+                        {h.name} <span className="font-normal text-text-subtle">· {dateSpan(h.from, h.to)}{h.days > 1 ? ` · ${h.days} days` : ''}</span>
+                      </p>
+                      <p className="text-[13px] text-text-muted">{appliesTo(h, directory.zoneName, directory.hqName)}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge tone={h.scope === 'NATIONAL' ? 'accent' : 'neutral'}>{HOLIDAY_SCOPE_LABEL[h.scope]}</Badge>
+                      <Button variant="ghost" size="sm" disabled={readOnly} aria-label={`Edit ${h.name}`} onClick={() => setEditing(h)}>
+                        <Pencil aria-hidden className="size-4" />
+                      </Button>
+                      <Button variant="ghost" size="sm" disabled={readOnly} aria-label={`Remove ${h.name}`} onClick={() => setRemoving(h)}>
+                        <Trash2 aria-hidden className="size-4" />
+                      </Button>
+                    </div>
+                  </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+        </div>
+      </DataState>
+
+      {adding ? <HolidayFormDialog onClose={() => setAdding(false)} /> : null}
+      {editing ? <HolidayFormDialog editing={editing} onClose={() => setEditing(null)} /> : null}
+      {uploading ? <HolidayImportDialog onClose={() => setUploading(false)} /> : null}
+      <ConfirmDialog
+        open={removing !== null}
+        onOpenChange={(open) => !open && setRemoving(null)}
+        title="Remove holiday"
+        description={
+          removing
+            ? `“${removing.name}” ${removing.groupId ? `(${dateSpan(removing.from, removing.to)}) is removed from the calendar, every day of it` : `on ${dateSpan(removing.from, removing.to)} is removed from the calendar`}. Leaves already counted keep the days they were counted with.`
+            : undefined
+        }
+        confirmLabel={removing?.groupId ? 'Remove every day' : 'Remove'}
+        pending={remove.isPending}
+        onConfirm={() => removing && remove.mutate({ id: removing.id, group: removing.groupId !== null })}
+      />
+    </Card>
+  );
+}

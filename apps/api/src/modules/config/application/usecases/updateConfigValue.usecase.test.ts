@@ -1,0 +1,225 @@
+import { describe, expect, it } from 'vitest';
+import type { SystemConfigEntry } from '../../domain/systemConfig.entity.js';
+import type { SystemConfigRepositoryPort } from '../../domain/systemConfig.repository.port.js';
+import { UpdateConfigValueUseCase } from './updateConfigValue.usecase.js';
+
+function makeEntry(overrides: Partial<SystemConfigEntry> = {}): SystemConfigEntry {
+  return {
+    key: 'DCR_MISS_GRACE_DAYS',
+    value: '1',
+    module: 'PLANNING',
+    description: 'Consecutive missed days tolerated before the compliance block fires.',
+    updatedBy: null,
+    updatedAt: new Date('2026-01-01'),
+    ...overrides,
+  };
+}
+
+class FakeSystemConfigRepository implements Pick<SystemConfigRepositoryPort, 'updateValue' | 'findByKey'> {
+  updates: Array<{ key: string; value: string; updatedBy: string }> = [];
+  /** Other settings the use case may read (the plan times check). */
+  others = new Map<string, string>();
+  constructor(private entry: SystemConfigEntry | null) {}
+  async findByKey(key: string): Promise<SystemConfigEntry | null> {
+    const value = this.others.get(key);
+    return value === undefined ? null : makeEntry({ key, value });
+  }
+  async updateValue(key: string, value: string, updatedBy: string): Promise<SystemConfigEntry | null> {
+    this.updates.push({ key, value, updatedBy });
+    if (!this.entry) return null;
+    this.entry = { ...this.entry, value, updatedBy, updatedAt: new Date() };
+    return this.entry;
+  }
+}
+
+describe('UpdateConfigValueUseCase', () => {
+  it('rejects a non-Admin caller before touching the repository', async () => {
+    const repository = new FakeSystemConfigRepository(makeEntry());
+    const useCase = new UpdateConfigValueUseCase(repository as unknown as SystemConfigRepositoryPort);
+
+    await expect(useCase.execute('user-1', 'HR', 'DCR_MISS_GRACE_DAYS', '2')).rejects.toMatchObject({
+      statusCode: 403,
+    });
+    expect(repository.updates).toHaveLength(0);
+  });
+
+  it('updates the value and stamps the acting Admin as updatedBy', async () => {
+    const repository = new FakeSystemConfigRepository(makeEntry());
+    const useCase = new UpdateConfigValueUseCase(repository as unknown as SystemConfigRepositoryPort);
+
+    const result = await useCase.execute('admin-1', 'ADMIN', 'DCR_MISS_GRACE_DAYS', '2');
+
+    expect(repository.updates).toEqual([{ key: 'DCR_MISS_GRACE_DAYS', value: '2', updatedBy: 'admin-1' }]);
+    expect(result).toMatchObject({ key: 'DCR_MISS_GRACE_DAYS', value: '2', updatedBy: 'admin-1' });
+  });
+
+  it('accepts any HH:mm as the business day start, wherever it falls against the plan deadline', async () => {
+    const repository = new FakeSystemConfigRepository(makeEntry({ key: 'DAY_START_TIME', value: '00:00' }));
+    repository.others.set('DAILY_PLAN_SUBMIT_CUTOFF_TIME', '10:00');
+    const useCase = new UpdateConfigValueUseCase(repository as unknown as SystemConfigRepositoryPort);
+
+    await expect(useCase.execute('admin-1', 'ADMIN', 'DAY_START_TIME', '2am')).rejects.toMatchObject({ statusCode: 400 });
+    await expect(useCase.execute('admin-1', 'ADMIN', 'DAY_START_TIME', '25:00')).rejects.toMatchObject({ statusCode: 400 });
+    expect(repository.updates).toHaveLength(0);
+    await expect(useCase.execute('admin-1', 'ADMIN', 'DAY_START_TIME', '07:00')).resolves.toMatchObject({ value: '07:00' });
+    await expect(useCase.execute('admin-1', 'ADMIN', 'DAY_START_TIME', '18:30')).resolves.toMatchObject({ value: '18:30' });
+
+    // The plan deadline can sit before the day start too: nothing orders the two.
+    repository.others.set('DAY_START_TIME', '18:30');
+    await expect(useCase.execute('admin-1', 'ADMIN', 'DAILY_PLAN_SUBMIT_CUTOFF_TIME', '01:30')).resolves.toMatchObject({ value: '01:30' });
+  });
+
+  it('rejects an unknown key with 404, not the internal CONFIG_KEY_MISSING path', async () => {
+    const repository = new FakeSystemConfigRepository(null);
+    const useCase = new UpdateConfigValueUseCase(repository as unknown as SystemConfigRepositoryPort);
+
+    await expect(useCase.execute('admin-1', 'ADMIN', 'NOT_A_REAL_KEY', '2')).rejects.toMatchObject({
+      statusCode: 404,
+    });
+  });
+
+  const build = () => {
+    const repository = new FakeSystemConfigRepository(makeEntry());
+    return { repository, useCase: new UpdateConfigValueUseCase(repository as unknown as SystemConfigRepositoryPort) };
+  };
+
+  describe('validation', () => {
+    it('refuses a value that breaks its setting’s rules with a 400 naming the rule, and stores nothing', async () => {
+      const { repository, useCase } = build();
+      await expect(useCase.execute('admin-1', 'ADMIN', 'DCR_MISS_GRACE_DAYS', 'banana')).rejects.toMatchObject({
+        statusCode: 400,
+        message: 'Use a whole number from 0 to 365.',
+      });
+      await expect(useCase.execute('admin-1', 'ADMIN', 'DCR_MISS_GRACE_DAYS', '366')).rejects.toMatchObject({ statusCode: 400 });
+      expect(repository.updates).toEqual([]);
+    });
+
+    it('refuses the values that would fail on every later read: a bad time, a month number, a made-up timezone', async () => {
+      const { repository, useCase } = build();
+      for (const [key, value] of [
+        ['DAILY_PLAN_SUBMIT_CUTOFF_TIME', 'banana'],
+        ['DAILY_PLAN_SUBMIT_CUTOFF_TIME', '9:05'],
+        ['FY_START_MONTH', '13'],
+        ['WEEKLY_OFF_SCHEDULE', 'APRIL'],
+        ['BUSINESS_TIMEZONE', 'Mars/Olympus'],
+        ['DCR_MISS_BLOCK_ENABLED', 'yes'],
+        ['APPROVAL_MANAGER_ONLY_KINDS', 'NONE,LEAVE'],
+      ] as const) {
+        await expect(useCase.execute('admin-1', 'ADMIN', key, value), `${key}=${value}`).rejects.toMatchObject({ statusCode: 400 });
+      }
+      expect(repository.updates).toEqual([]);
+    });
+
+    it('stores the value in the form the readers expect, not as typed', async () => {
+      const { repository, useCase } = build();
+      await useCase.execute('admin-1', 'ADMIN', 'FY_START_MONTH', ' january ');
+      await useCase.execute('admin-1', 'ADMIN', 'DCR_MISS_BLOCK_ENABLED', 'FALSE');
+      await useCase.execute('admin-1', 'ADMIN', 'GEO_FENCE_RADIUS_METERS', ' 0150 ');
+      await useCase.execute('admin-1', 'ADMIN', 'APPROVAL_MANAGER_ONLY_KINDS', 'daily_plan, leave');
+      expect(repository.updates.map((u) => [u.key, u.value])).toEqual([
+        ['FY_START_MONTH', 'JANUARY'],
+        ['DCR_MISS_BLOCK_ENABLED', 'false'],
+        ['GEO_FENCE_RADIUS_METERS', '150'],
+        ['APPROVAL_MANAGER_ONLY_KINDS', 'DAILY_PLAN,LEAVE'],
+      ]);
+    });
+
+    it('treats a key with no definition as unknown, even if a row exists for it', async () => {
+      const { useCase } = build();
+      await expect(useCase.execute('admin-1', 'ADMIN', 'SOMETHING_OLD', 'x')).rejects.toMatchObject({ statusCode: 404 });
+    });
+
+    it('checks the role before the value', async () => {
+      const { useCase } = build();
+      await expect(useCase.execute('hr-1', 'HR', 'DCR_MISS_GRACE_DAYS', 'banana')).rejects.toMatchObject({ statusCode: 403 });
+    });
+  });
+
+  describe('the station distances stay in order', () => {
+    it('refuses an Out-station distance that is not more than Ex-station, and the reverse', async () => {
+      const { repository, useCase } = build();
+      repository.others.set('EX_STATION_MIN_KM', '15');
+      repository.others.set('OUT_STATION_MIN_KM', '50');
+      await expect(useCase.execute('a', 'ADMIN', 'OUT_STATION_MIN_KM', '15')).rejects.toMatchObject({
+        statusCode: 400,
+        message: 'Out-station (15 km) must be more than Ex-station (15 km).',
+      });
+      await expect(useCase.execute('a', 'ADMIN', 'EX_STATION_MIN_KM', '50')).rejects.toMatchObject({ statusCode: 400 });
+      await expect(useCase.execute('a', 'ADMIN', 'OUT_STATION_MIN_KM', '16')).resolves.toBeDefined();
+      await expect(useCase.execute('a', 'ADMIN', 'EX_STATION_MIN_KM', '49')).resolves.toBeDefined();
+    });
+  });
+
+  describe('the daily-report deadline never comes after the salary day', () => {
+    it('refuses a deadline day later than the salary day, and a salary day earlier than the deadline day', async () => {
+      const { repository, useCase } = build();
+      repository.others.set('SALARY_RUN_DAY', '5');
+      repository.others.set('DCR_SUBMIT_CUTOFF_DAY', '3');
+      await expect(useCase.execute('a', 'ADMIN', 'DCR_SUBMIT_CUTOFF_DAY', '6')).rejects.toMatchObject({ statusCode: 400 });
+      await expect(useCase.execute('a', 'ADMIN', 'SALARY_RUN_DAY', '2')).rejects.toMatchObject({ statusCode: 400 });
+      await expect(useCase.execute('a', 'ADMIN', 'DCR_SUBMIT_CUTOFF_DAY', '5')).resolves.toBeDefined();
+      await expect(useCase.execute('a', 'ADMIN', 'SALARY_RUN_DAY', '3')).resolves.toBeDefined();
+      await expect(useCase.execute('a', 'ADMIN', 'DCR_SUBMIT_CUTOFF_DAY', '0')).resolves.toBeDefined(); // 0 = no deadline
+    });
+  });
+
+  describe('the plan times stay in order', () => {
+    it('refuses a latest resubmit time that is not after the plan deadline', async () => {
+      const { repository, useCase } = build();
+      repository.others.set('DAILY_PLAN_SUBMIT_CUTOFF_TIME', '10:00');
+      await expect(useCase.execute('a', 'ADMIN', 'DAILY_PLAN_RESUBMIT_LATEST_TIME', '10:00')).rejects.toMatchObject({
+        statusCode: 400,
+        message: 'The latest resubmit time (10:00) must be after the plan deadline (10:00).',
+      });
+      await expect(useCase.execute('a', 'ADMIN', 'DAILY_PLAN_RESUBMIT_LATEST_TIME', '09:30')).rejects.toMatchObject({ statusCode: 400 });
+      await expect(useCase.execute('a', 'ADMIN', 'DAILY_PLAN_RESUBMIT_LATEST_TIME', '10:01')).resolves.toBeDefined();
+    });
+
+    it('refuses a plan deadline that is not before the latest resubmit time', async () => {
+      const { repository, useCase } = build();
+      repository.others.set('DAILY_PLAN_RESUBMIT_LATEST_TIME', '11:30');
+      await expect(useCase.execute('a', 'ADMIN', 'DAILY_PLAN_SUBMIT_CUTOFF_TIME', '12:00')).rejects.toMatchObject({
+        statusCode: 400,
+        message: 'The plan deadline (12:00) must be before the latest resubmit time (11:30).',
+      });
+      await expect(useCase.execute('a', 'ADMIN', 'DAILY_PLAN_SUBMIT_CUTOFF_TIME', '09:00')).resolves.toBeDefined();
+    });
+
+    it('does not let a bad older value in the other setting block fixing this one, and ignores unrelated settings', async () => {
+      const { repository, useCase } = build();
+      repository.others.set('DAILY_PLAN_SUBMIT_CUTOFF_TIME', 'banana');
+      await expect(useCase.execute('a', 'ADMIN', 'DAILY_PLAN_RESUBMIT_LATEST_TIME', '11:30')).resolves.toBeDefined();
+      await expect(useCase.execute('a', 'ADMIN', 'DCR_MISS_GRACE_DAYS', '2')).resolves.toBeDefined();
+    });
+  });
+
+  describe('weekly off history', () => {
+    const SUNDAY = '{"effectiveFrom":"1970-01-01","rules":[{"weekday":"SUNDAY","weeks":"ALL"}]}';
+    const SAT = (from: string) => `{"effectiveFrom":"${from}","rules":[{"weekday":"SUNDAY","weeks":"ALL"},{"weekday":"SATURDAY","weeks":[1,3]}]}`;
+    const run = (stored: string, next: string) => {
+      const repository = new FakeSystemConfigRepository(makeEntry({ key: 'WEEKLY_OFF_SCHEDULE', value: stored }));
+      repository.others.set('WEEKLY_OFF_SCHEDULE', stored);
+      const useCase = new UpdateConfigValueUseCase(repository as unknown as SystemConfigRepositoryPort, () => '2026-10-28');
+      return { repository, result: useCase.execute('admin-1', 'ADMIN', 'WEEKLY_OFF_SCHEDULE', next) };
+    };
+
+    it('adds a set that starts today or later', async () => {
+      const { repository, result } = run(`[${SUNDAY}]`, `[${SUNDAY},${SAT('2026-11-01')}]`);
+      await expect(result).resolves.toBeDefined();
+      expect(repository.updates).toHaveLength(1);
+    });
+
+    it('refuses a new set that starts in the past', async () => {
+      await expect(run(`[${SUNDAY}]`, `[${SUNDAY},${SAT('2026-10-01')}]`).result).rejects.toMatchObject({ statusCode: 400 });
+    });
+
+    it('refuses to change or drop a set that has already started', async () => {
+      await expect(run(`[${SUNDAY}]`, `[${SAT('1970-01-01')}]`).result).rejects.toMatchObject({ statusCode: 400 });
+      await expect(run(`[${SUNDAY},${SAT('2026-10-01')}]`, `[${SUNDAY}]`).result).rejects.toMatchObject({ statusCode: 400 });
+    });
+
+    it('lets a set that has not started yet be changed or removed', async () => {
+      await expect(run(`[${SUNDAY},${SAT('2026-12-01')}]`, `[${SUNDAY}]`).result).resolves.toBeDefined();
+    });
+  });
+});

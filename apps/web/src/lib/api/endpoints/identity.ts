@@ -1,0 +1,200 @@
+import type {
+  ApplyDuePromotionsResultDto,
+  AssignCtcDto,
+  AssignCtcResultDto,
+  CreateDesignationDto,
+  CreatePayBandDto,
+  CreatePayComponentDto,
+  CreateUserDto,
+  CtcAssignmentDto,
+  CtcPreviewDto,
+  DeactivateUserDto,
+  DeactivationImpactDto,
+  DeactivationResultDto,
+  DesignationDto,
+  EmployeeDraftDto,
+  FinalizedEmployeeDto,
+  OrgNodeDto,
+  PaginatedDto,
+  PayBandDto,
+  PayComponentDto,
+  PendingDeviceDto,
+  PhotoDto,
+  PreviewCtcDto,
+  PromotionDto,
+  PromotionPreviewDto,
+  PromotionRequestDto,
+  PromotionStatus,
+  ReactivateUserDto,
+  ReapplyCtcDto,
+  ReapplyOutcomeDto,
+  ReassignManagerDto,
+  ReassignManagerResultDto,
+  ReportingLineDto,
+  SaveEmployeeDraftDto,
+  UpdatePayBandDto,
+  UpdatePayComponentDto,
+  UpdateUserDto,
+  UserDetailDto,
+  UserDeviceDto,
+  UserDocumentDto,
+  UserListItemDto,
+  UserListStatus,
+} from '@edhas/contracts';
+import { request } from '../client';
+
+export interface ListUsersQuery {
+  page?: number | undefined;
+  pageSize?: number | undefined;
+  status?: UserListStatus | undefined;
+  role?: UserListItemDto['role'] | undefined;
+  designationId?: string | undefined;
+  search?: string | undefined;
+  /** Only blocked employees. Send `true` or leave out: the API reads any present value as true. */
+  isBlocked?: true | undefined;
+  /** Only these employees, comma-separated ids (at most 500). */
+  ids?: string | undefined;
+}
+
+export const identityApi = {
+  /** Not paginated: a bare array, oldest request first. */
+  pendingDevices: (token: string, signal?: AbortSignal) =>
+    request<PendingDeviceDto[]>('/identity/devices/pending', { token, signal }),
+
+  users: (token: string, query: ListUsersQuery, signal?: AbortSignal) =>
+    request<PaginatedDto<UserListItemDto>>('/identity/users', { token, query: { ...query }, signal }),
+
+  /** Active field employees by name, code and designation only: what the Accountant's pickers may see. */
+  fieldDirectory: (token: string, signal?: AbortSignal) =>
+    request<Array<{ id: string; employeeCode: string; name: string; designation: string | null; label: string }>>('/identity/work-with/directory', { token, signal }),
+
+  userDevices: (token: string, userId: string, signal?: AbortSignal) =>
+    request<UserDeviceDto[]>(`/identity/users/${userId}/devices`, { token, signal }),
+
+  /** `approve` and `reject` return the device; `remove` and `logout` return nothing. */
+  decideDevice: (token: string, userId: string, deviceRowId: string, action: 'approve' | 'reject') =>
+    request<UserDeviceDto>(`/identity/users/${userId}/devices/${deviceRowId}/${action}`, { method: 'POST', token }),
+  removeDevice: (token: string, userId: string, deviceRowId: string) =>
+    request<Record<string, never>>(`/identity/users/${userId}/devices/${deviceRowId}`, { method: 'DELETE', token }),
+  logoutDevice: (token: string, userId: string, deviceRowId: string) =>
+    request<Record<string, never>>(`/identity/users/${userId}/devices/${deviceRowId}/logout`, { method: 'POST', token }),
+
+  /** Ends every session of the employee. Admin only. */
+  resetPassword: (token: string, userId: string, newPassword: string) =>
+    request<Record<string, never>>(`/identity/users/${userId}/reset-password`, { method: 'POST', token, body: { newPassword } }),
+
+  /** Clears a compliance block. Admin, or a manager above the employee; the reason is kept as the audit trail. A no-op for someone who is not blocked. */
+  unblockUser: (token: string, userId: string, reason: string) =>
+    request<Record<string, never>>(`/identity/users/${userId}/unblock`, { method: 'POST', token, body: { reason } }),
+
+  user: (token: string, id: string, signal?: AbortSignal) =>
+    request<UserDetailDto>(`/identity/users/${id}`, { token, signal }),
+
+  reportingLine: (token: string, id: string, signal?: AbortSignal) =>
+    request<ReportingLineDto>(`/identity/users/${id}/reporting`, { token, signal }),
+
+  /** One level of the organisation tree: the people under `parentId`, or the top when it is left out. */
+  orgChildren: (token: string, query: { parentId?: string; page: number; pageSize: number }, signal?: AbortSignal) =>
+    request<PaginatedDto<OrgNodeDto>>('/identity/org/children', { token, query: { ...query }, signal }),
+
+  /** Move several employees under one manager; all checked first, a refusal moves no one. */
+  reassignManager: (token: string, body: ReassignManagerDto) =>
+    request<ReassignManagerResultDto>('/identity/users/manager-changes', { method: 'POST', token, body }),
+
+  updateUser: (token: string, id: string, body: UpdateUserDto) =>
+    request<UserListItemDto>(`/identity/users/${id}`, { method: 'PATCH', token, body }),
+
+  /** Admin: what deactivating would do, for a chosen last working day (default today). */
+  deactivation: (token: string, id: string, lastWorkingDay: string | undefined, signal?: AbortSignal) =>
+    request<DeactivationImpactDto>(`/identity/users/${id}/deactivation`, { token, signal, ...(lastWorkingDay && { query: { lastWorkingDay } }) }),
+  /** Admin: deactivate, moving the team and handing the work over. On an inactive account it runs the hand-over again. */
+  deactivate: (token: string, id: string, body: DeactivateUserDto) =>
+    request<DeactivationResultDto>(`/identity/users/${id}/deactivate`, { method: 'POST', token, body }),
+  /** Admin: a rehire, usable again from the rejoining date. */
+  reactivate: (token: string, id: string, body: ReactivateUserDto) =>
+    request<{ status: string }>(`/identity/users/${id}/reactivate`, { method: 'POST', token, body }),
+
+  /** `multipart/form-data`: the document type, then the file. Returns the stored document. */
+  uploadDocument: (token: string, userId: string, body: FormData) =>
+    request<UserDocumentDto>(`/identity/users/${userId}/documents`, { method: 'POST', token, body }),
+
+  removeDocument: (token: string, userId: string, documentId: string) =>
+    request<Record<string, never>>(`/identity/users/${userId}/documents/${documentId}`, { method: 'DELETE', token }),
+
+  /** `multipart/form-data` with one `file`. Replaces any photo; the old file is deleted server side. */
+  setPhoto: (token: string, userId: string, body: FormData) =>
+    request<PhotoDto>(`/identity/users/${userId}/photo`, { method: 'PUT', token, body }),
+
+  removePhoto: (token: string, userId: string) =>
+    request<PhotoDto>(`/identity/users/${userId}/photo`, { method: 'DELETE', token }),
+
+  createUser: (token: string, body: CreateUserDto) =>
+    request<UserListItemDto>('/identity/users', { method: 'POST', token, body }),
+};
+
+/** Half-filled new-employee forms, and the last step that turns one into a login. */
+export const employeeDraftsApi = {
+  setPhoto: (token: string, id: string, body: FormData) =>
+    request<PhotoDto>(`/identity/employee-drafts/${id}/photo`, { method: 'PUT', token, body }),
+  removePhoto: (token: string, id: string) =>
+    request<PhotoDto>(`/identity/employee-drafts/${id}/photo`, { method: 'DELETE', token }),
+  list: (token: string, signal?: AbortSignal) => request<EmployeeDraftDto[]>('/identity/employee-drafts', { token, signal }),
+  get: (token: string, id: string, signal?: AbortSignal) => request<EmployeeDraftDto>(`/identity/employee-drafts/${id}`, { token, signal }),
+  create: (token: string, body: SaveEmployeeDraftDto) =>
+    request<EmployeeDraftDto>('/identity/employee-drafts', { method: 'POST', token, body }),
+  update: (token: string, id: string, body: SaveEmployeeDraftDto) =>
+    request<EmployeeDraftDto>(`/identity/employee-drafts/${id}`, { method: 'PATCH', token, body }),
+  remove: (token: string, id: string) =>
+    request<Record<string, never>>(`/identity/employee-drafts/${id}`, { method: 'DELETE', token }),
+  /** Returns the generated password this once. */
+  finalize: (token: string, id: string) =>
+    request<FinalizedEmployeeDto>(`/identity/employee-drafts/${id}/finalize`, { method: 'POST', token }),
+};
+
+/** Master data. Both lists are bare arrays: a handful of rows each, never paginated. */
+export const designationsApi = {
+  list: (token: string, signal?: AbortSignal) =>
+    request<DesignationDto[]>('/identity/designations', { token, signal }),
+  create: (token: string, body: CreateDesignationDto) =>
+    request<DesignationDto>('/identity/designations', { method: 'POST', token, body }),
+};
+
+export const payBandsApi = {
+  list: (token: string, signal?: AbortSignal) => request<PayBandDto[]>('/identity/pay-bands', { token, signal }),
+  create: (token: string, body: CreatePayBandDto) =>
+    request<PayBandDto>('/identity/pay-bands', { method: 'POST', token, body }),
+  update: (token: string, id: string, body: UpdatePayBandDto) =>
+    request<PayBandDto>(`/identity/pay-bands/${id}`, { method: 'PATCH', token, body }),
+};
+
+/** The org-wide CTC formula and each employee's CTC revisions. */
+export const payComponentsApi = {
+  list: (token: string, signal?: AbortSignal) => request<PayComponentDto[]>('/identity/pay-components', { token, signal }),
+  create: (token: string, body: CreatePayComponentDto) =>
+    request<PayComponentDto>('/identity/pay-components', { method: 'POST', token, body }),
+  update: (token: string, id: string, body: UpdatePayComponentDto) =>
+    request<PayComponentDto>(`/identity/pay-components/${id}`, { method: 'PATCH', token, body }),
+};
+
+export const ctcApi = {
+  preview: (token: string, body: PreviewCtcDto, signal?: AbortSignal) =>
+    request<CtcPreviewDto>('/identity/ctc/preview', { method: 'POST', token, body, signal }),
+  history: (token: string, userId: string, signal?: AbortSignal) =>
+    request<CtcAssignmentDto[]>(`/identity/users/${userId}/ctc`, { token, signal }),
+  assign: (token: string, userId: string, body: AssignCtcDto) =>
+    request<AssignCtcResultDto>(`/identity/users/${userId}/ctc`, { method: 'POST', token, body }),
+  reapply: (token: string, body: ReapplyCtcDto) =>
+    request<ReapplyOutcomeDto[]>('/identity/ctc/reapply', { method: 'POST', token, body }),
+};
+
+export const promotionsApi = {
+  preview: (token: string, userId: string, body: PromotionRequestDto, signal?: AbortSignal) =>
+    request<PromotionPreviewDto>(`/identity/users/${userId}/promotions/preview`, { method: 'POST', token, body, signal }),
+  schedule: (token: string, userId: string, body: PromotionRequestDto) =>
+    request<PromotionDto>(`/identity/users/${userId}/promotions`, { method: 'POST', token, body }),
+  forUser: (token: string, userId: string, signal?: AbortSignal) => request<PromotionDto[]>(`/identity/users/${userId}/promotions`, { token, signal }),
+  all: (token: string, status?: PromotionStatus, signal?: AbortSignal) =>
+    request<PromotionDto[]>(`/identity/promotions${status ? `?status=${status}` : ''}`, { token, signal }),
+  cancel: (token: string, promotionId: string) => request<PromotionDto>(`/identity/promotions/${promotionId}/cancel`, { method: 'POST', token }),
+  applyDue: (token: string) => request<ApplyDuePromotionsResultDto>('/identity/promotions/apply-due', { method: 'POST', token }),
+};

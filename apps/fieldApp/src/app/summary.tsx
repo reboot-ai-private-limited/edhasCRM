@@ -1,0 +1,261 @@
+import { router } from 'expo-router';
+import { useMemo, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
+
+import { Notice } from '@/components/notice';
+import { PrimaryButton } from '@/components/primary-button';
+import { ScreenShell } from '@/components/screen-shell';
+import { TextField } from '@/components/text-field';
+import { ThemedText } from '@/components/themed-text';
+import { ThemedView } from '@/components/themed-view';
+import { CardSection, Pill, StatusBanner, SummaryStrip, sym } from '@/components/ui-cards';
+import { Accents, Spacing, type Accent } from '@/constants/theme';
+import { confirmRemove, removeDayRecord } from '@/lib/day-records';
+import { formatRupees } from '@/lib/money';
+import { isFieldDay, needsDayNote, workingTypeLabel } from '@/lib/planning';
+import { useCallDoctors } from '@/hooks/use-call-doctors';
+import { useDayGate } from '@/hooks/use-day-gate';
+import { useReportSent } from '@/hooks/use-report-sent';
+import { DAY_KINDS, finalSubmit, prettyDay, useOnline, useRecords, type OutboxRecord, type SyncKind } from '@/offline';
+import { useCachedSource } from '@/offline/cache';
+import { addDays, monthOf } from '@/offline/day';
+import type { ConfigSnapshot, FieldActivitySnapshot, FieldMasterDataSnapshot, PlanningSnapshot } from '@/types/sync';
+
+const KIND_LABEL: Partial<Record<SyncKind, string>> = {
+  DOCTOR_CALL: 'Dr call',
+  CHEMIST_CALL: 'Chemist call',
+  DOCTOR_FOLLOWUP: 'Dr followup',
+  CHEMIST_FOLLOWUP: 'Chemist followup',
+  EXPENSE: 'Expense',
+};
+
+const STATUS_TEXT: Record<OutboxRecord['status'], string> = {
+  DRAFT: 'Not sent yet',
+  QUEUED: 'Waiting to send',
+  SYNCED: 'Sent',
+  FAILED: 'Not accepted',
+};
+
+const EXPENSE_LABEL: Record<string, string> = { TRAVEL: 'Travel', MEAL: 'Meal', MISC: 'Other' };
+
+const DCR_TEXT: Record<string, string> = {
+  SUBMITTED: 'Submitted — waiting for your manager',
+  MANAGER_APPROVED: 'Approved by your manager',
+  APPROVED: 'Approved',
+  REJECTED: 'Rejected — fix it and submit again',
+  REOPENED: 'Reopened — fix it and submit again',
+  WITHDRAWN: 'Withdrawn',
+  DRAFT: 'Saved, not submitted',
+};
+
+type Msg = { tone: 'danger' | 'success' | 'info' | 'warning'; text: string };
+
+/**
+ * Summary & Final Submission (PRD §6.2.D, docs/mobile/dcr.md): everything logged today in one place, and the button that
+ * sends the day to your manager. Calls, followups and expenses are kept on the phone until now; Final Submission needs the
+ * internet, sends them in order, and a record the server refuses is shown here with the reason so you can fix it and submit
+ * again. Every day gets a report: on a Meeting or Conference day it is a note for the day (required), on a Strike day one tap.
+ */
+export default function SummaryScreen() {
+  const gate = useDayGate();
+  const online = useOnline();
+  const master = useCachedSource<FieldMasterDataSnapshot>('fieldMasterData');
+  const activity = useCachedSource<FieldActivitySnapshot>('fieldActivity');
+  const planning = useCachedSource<PlanningSnapshot>('planning');
+  const { records } = useRecords(DAY_KINDS);
+
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg | null>(null);
+  const [note, setNote] = useState('');
+
+  // A manager's calls can be on doctors of anyone below them, which the snapshot doesn't hold.
+  const { doctors: callDoctors } = useCallDoctors();
+  const names = useMemo(
+    () => new Map([...callDoctors, ...(master.data?.chemists ?? [])].map((o) => [o.id, o.name])),
+    [callDoctors, master.data],
+  );
+
+  const today = gate.today;
+  // docs/mobile/dcr.md rule 12: with the default cutoff day 1 (Admin's DCR_SUBMIT_CUTOFF_DAY), the month's last day must be sent that day.
+  const config = useCachedSource<ConfigSnapshot>('config');
+  const cutoffDay = Number(config.data?.settings.DCR_SUBMIT_CUTOFF_DAY ?? '1');
+  const lastDayDue = cutoffDay === 1 && monthOf(addDays(today, 1)) !== monthOf(today);
+  const dayRecords = records.filter(
+    (r) => !r.deleted && DAY_KINDS.includes(r.kind) && (r.payload as { reportDate?: string }).reportDate === today,
+  );
+  const dcr = activity.data?.dcrs?.find((d) => d.reportDate === today) ?? null;
+  const alreadySent = useReportSent(today);
+
+  const failed = dayRecords.filter((r) => r.status === 'FAILED');
+
+  const plan = planning.data?.dailyPlans.find((p) => p.planDate === today) ?? null;
+  const plannedDoctorIds = useMemo(() => new Set((plan?.doctors ?? []).map((d) => d.doctorId)), [plan]);
+  const hasPlannedDoctors = (plan?.doctors?.length ?? 0) > 0;
+  const noteRequired = plan ? needsDayNote(plan.workingType) : false;
+
+  const describe = (r: OutboxRecord) => {
+    const p = r.payload as { doctorId?: string; chemistId?: string; type?: string; amountPaise?: number };
+    const who = names.get(p.doctorId ?? p.chemistId ?? '');
+    if (r.kind === 'EXPENSE') return `${EXPENSE_LABEL[p.type ?? ''] ?? 'Expense'} · ${formatRupees(p.amountPaise ?? 0)}`;
+    const notInPlan = r.kind === 'DOCTOR_CALL' && Boolean(p.doctorId) && hasPlannedDoctors && !plannedDoctorIds.has(p.doctorId!);
+    const label = who ?? (p.doctorId ? 'Doctor (no longer active)' : p.chemistId ? 'Chemist (no longer active)' : 'Record');
+    return notInPlan ? `${label} (Not in plan)` : label;
+  };
+
+  const submit = async () => {
+    if (noteRequired && !note.trim()) {
+      setMsg({ tone: 'danger', text: `Write a note for the day (agenda, venue) — it is required on a ${workingTypeLabel(plan!.workingType)} day.` });
+      return;
+    }
+    setBusy(true);
+    setMsg({ tone: 'info', text: 'Sending today’s report…' });
+    try {
+      const result = await finalSubmit(today, note.trim() || null);
+      if (result.offline) {
+        setMsg({ tone: 'warning', text: 'The connection dropped. Nothing was lost — your report stays on this phone. Try again when you are online.' });
+      } else if (result.submit?.status === 'SYNCED') {
+        setMsg({ tone: 'success', text: 'Today’s report is submitted. Your manager will review it.' });
+      } else if (result.submit?.errorMessage) {
+        setMsg({ tone: 'danger', text: result.submit.errorMessage });
+      } else if (result.failed > 0 || result.held > 0) {
+        setMsg({ tone: 'danger', text: 'Some records were not accepted. Fix them below and submit again.' });
+      } else {
+        setMsg({ tone: 'danger', text: result.error ?? 'The report could not be submitted. Try again.' });
+      }
+    } catch (err) {
+      setMsg({ tone: 'danger', text: err instanceof Error ? err.message : 'Could not submit the report.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const blocked = gate.state === 'blocked';
+  // Today's plan must be approved (gate open), and nothing the server refused may be left: fix those first.
+  const canSubmit = online && gate.state === 'open' && !alreadySent && failed.length === 0;
+
+  const count = (kinds: SyncKind[]) => dayRecords.filter((r) => kinds.includes(r.kind)).length;
+  const dcrAccent: Accent = !dcr ? 'slate' : dcr.status === 'REJECTED' ? 'red' : dcr.status === 'APPROVED' ? 'green' : dcr.status === 'DRAFT' ? 'slate' : 'amber';
+
+  return (
+    <ScreenShell
+      title="Summary"
+      subtitle={`${prettyDay(today)} · send the day to your manager`}
+      footer={
+        alreadySent ? null : (
+          <PrimaryButton
+            label={dayRecords.length === 0 ? 'Submit today’s report (nothing logged)' : 'Final Submission'}
+            loading={busy}
+            disabled={!canSubmit}
+            onPress={submit}
+          />
+        )
+      }>
+      {blocked || gate.state === 'unknown' ? <Notice tone="warning">{gate.reason ?? ''}</Notice> : null}
+      {lastDayDue ? (
+        <Notice tone="warning" title="Last day of the month">
+          Submit today’s report today. After midnight the server refuses it unless Admin allows it late.
+        </Notice>
+      ) : null}
+      {gate.state === 'closed' ? (
+        <>
+          <Notice tone="warning" title={gate.cause === 'MONTHLY_PLAN' ? 'Tour plan not approved' : 'Today’s plan isn’t approved'}>
+            {gate.reason ?? ''}
+          </Notice>
+          {gate.cause === 'MONTHLY_PLAN' ? (
+            <PrimaryButton label="Go to Tour Plan" variant="text" onPress={() => router.push({ pathname: '/monthly-plan', params: { month: 'current' } })} />
+          ) : null}
+        </>
+      ) : null}
+      {dcr ? (
+        <StatusBanner accent={dcrAccent} icon={sym('doc.text', 'description')} title="Today’s report" text={DCR_TEXT[dcr.status] ?? dcr.status} />
+      ) : alreadySent ? null : (
+        <StatusBanner accent="slate" icon={sym('square.and.pencil', 'edit')} title="Not submitted yet" text="Check what you logged below, then send the day." />
+      )}
+      {!online ? <Notice tone="info">You’re offline. Your report is kept on this phone; Final Submission needs the internet.</Notice> : null}
+      {msg ? <Notice tone={msg.tone}>{msg.text}</Notice> : null}
+
+      <SummaryStrip
+        items={[
+          { label: 'Calls', value: count(['DOCTOR_CALL', 'CHEMIST_CALL']), accent: 'blue' },
+          { label: 'Follow-ups', value: count(['DOCTOR_FOLLOWUP', 'CHEMIST_FOLLOWUP']), accent: 'teal' },
+          { label: 'Expenses', value: count(['EXPENSE']), accent: 'purple' },
+          { label: 'To fix', value: failed.length, accent: failed.length > 0 ? 'red' : 'slate' },
+        ]}
+      />
+
+      <CardSection icon={sym('checklist', 'checklist')} accent="green" title="Logged today" count={dayRecords.length}>
+        {dayRecords.length === 0 ? (
+          <ThemedText type="small" themeColor="textSecondary">
+            Nothing logged yet. Add calls, followups or expenses from Home.
+          </ThemedText>
+        ) : (
+          dayRecords.map((r) => (
+            <ThemedView key={r.clientId} style={[styles.row, { borderColor: r.status === 'FAILED' ? Accents.red.border : Accents.slate.border }]}>
+              <View style={styles.head}>
+                <ThemedText type="smallBold" style={styles.grow}>{`${KIND_LABEL[r.kind] ?? r.kind} · ${describe(r)}`}</ThemedText>
+                <Pill text={STATUS_TEXT[r.status]} accent={RECORD_ACCENT[r.status]} />
+              </View>
+              {r.status === 'FAILED' && r.errorMessage ? (
+                <ThemedText type="small" themeColor="danger">
+                  {r.errorMessage}
+                </ThemedText>
+              ) : null}
+              {/* Refused for its location: nothing was stored, and sending it again won't help — drop it and add it at the place. */}
+              {r.status === 'FAILED' && r.errorCode === 'NOT_AT_LOCATION' ? (
+                <PrimaryButton
+                  label="Remove this record"
+                  variant="text"
+                  onPress={() =>
+                    confirmRemove(r.kind.endsWith('FOLLOWUP') ? 'follow-up' : 'call', () =>
+                      void removeDayRecord(r).catch((err) => setMsg({ tone: 'danger', text: err instanceof Error ? err.message : 'Could not remove it.' })),
+                    )
+                  }
+                />
+              ) : null}
+            </ThemedView>
+          ))
+        )}
+      </CardSection>
+
+      {failed.length > 0 ? (
+        <Notice tone="danger" title="Fix before submitting">
+          {'Open the screen for each record marked “Not accepted”, correct it, and submit again.'}
+        </Notice>
+      ) : null}
+
+      {alreadySent ? null : (
+        <>
+          {plan && !isFieldDay(plan.workingType) ? (
+            <Notice tone="info" title={`Today is a ${workingTypeLabel(plan.workingType)} day`}>
+              {noteRequired
+                ? 'There are no calls today. Write a note for the day (agenda, venue) and submit — the note is required.'
+                : 'There are no calls today. Submit the day; a note is optional.'}
+            </Notice>
+          ) : null}
+          <CardSection icon={sym('text.bubble', 'chat')} accent="teal" title={noteRequired ? 'Note for the day (required)' : 'Note for the day (optional)'}>
+            <TextField
+              label="Note"
+              placeholder={noteRequired ? 'Agenda, venue…' : undefined}
+              value={note}
+              onChangeText={(t) => {
+                setNote(t);
+                setMsg(null);
+              }}
+              multiline
+              maxLength={1000}
+              editable={!busy}
+            />
+          </CardSection>
+        </>
+      )}
+    </ScreenShell>
+  );
+}
+
+const RECORD_ACCENT: Record<OutboxRecord['status'], Accent> = { DRAFT: 'slate', QUEUED: 'amber', SYNCED: 'green', FAILED: 'red' };
+
+const styles = StyleSheet.create({
+  row: { gap: Spacing.one, borderWidth: 1, borderRadius: Spacing.two + 2, padding: Spacing.two + 2, backgroundColor: 'transparent' },
+  head: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  grow: { flex: 1 },
+});

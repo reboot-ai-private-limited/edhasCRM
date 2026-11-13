@@ -1,0 +1,160 @@
+import type { ApprovalsPort } from '../../domain/approvals.port.js';
+import type { DcrRepositoryPort } from '../../domain/dcr.repository.port.js';
+import type { ChemistCallRepositoryPort, DoctorCallRepositoryPort, FollowupRepositoryPort } from '../../domain/records.repository.port.js';
+import type { DcrClock } from '../dcrClock.js';
+import { readConfig, parseBoolean, type ConfigReader } from '@/shared/config/readConfig.js';
+import { DCR_KIND, dcrStatus, isApprovedDcr, isQualifyingDcr } from '../dcrStatus.js';
+
+/** What one employee's reported days of one month came to. A day is reported once its DCR is submitted or approved (`hasQualifyingDcr`'s rule). */
+export interface DcrMonthSummary {
+  userId: string;
+  /** `YYYY-MM`, by the day reported. */
+  month: string;
+  reportedDays: number;
+  /** Reported days submitted after the day itself (in the business timezone). */
+  lateDays: number;
+  doctorCalls: number;
+  chemistCalls: number;
+  followups: number;
+  /** Doctor and chemist calls together, by the server's geofence result. */
+  geofence: { pass: number; fail: number; unverified: number; override: number };
+  /** Doctor calls to a Doctor who wasn't on the day's plan. */
+  notInPlan: number;
+  /** Follow-ups on a doctor not on the day's plan, or a chemist whose route the plan doesn't list. */
+  followupsNotInPlan: number;
+  /** Doctor and chemist calls on a route the day's plan doesn't list. */
+  offRouteCalls: number;
+}
+
+/**
+ * Every employee's reported days, calls, follow-ups, geofence results and late submissions by month over a date range — the DCR report's input,
+ * in a handful of queries however many reports. Only reported days count: calls logged in a draft or rejected report are left out.
+ */
+export class SummarizeDcrsUseCase {
+  constructor(
+    private readonly dcrs: DcrRepositoryPort,
+    private readonly approvals: ApprovalsPort,
+    private readonly doctorCalls: DoctorCallRepositoryPort,
+    private readonly chemistCalls: ChemistCallRepositoryPort,
+    private readonly followups: FollowupRepositoryPort,
+    private readonly clock: DcrClock,
+  ) {}
+
+  async execute(range: { from: string; to: string }): Promise<DcrMonthSummary[]> {
+    const all = await this.dcrs.listRange(range.from, range.to);
+    const requests = new Map((await this.approvals.listForRecords(DCR_KIND, all.map((d) => d.id))).map((r) => [r.recordId, r]));
+    const reported = all.filter((d) => isQualifyingDcr(dcrStatus(requests.get(d.id) ?? null)));
+    const byDcr = new Map(reported.map((d) => [d.id, d]));
+    const [doctor, chemist, follow, unplanned, followUnplanned, doctorOffRoute, chemistOffRoute] = await Promise.all([
+      this.doctorCalls.countByGeofence(range),
+      this.chemistCalls.countByGeofence(range),
+      this.followups.countByDcrRange(range),
+      this.doctorCalls.countNotInPlan(range),
+      this.followups.countNotInPlan(range),
+      this.doctorCalls.countRouteNotInPlan(range),
+      this.chemistCalls.countRouteNotInPlan(range),
+    ]);
+
+    const dateOf = await this.clock.dateConverter();
+    const out = new Map<string, DcrMonthSummary>();
+    const of = (userId: string, month: string): DcrMonthSummary => {
+      const key = `${userId}|${month}`;
+      const cur = out.get(key) ?? { userId, month, reportedDays: 0, lateDays: 0, doctorCalls: 0, chemistCalls: 0, followups: 0, geofence: { pass: 0, fail: 0, unverified: 0, override: 0 }, notInPlan: 0, followupsNotInPlan: 0, offRouteCalls: 0 };
+      out.set(key, cur);
+      return cur;
+    };
+    for (const d of reported) {
+      const s = of(d.userId, d.reportDate.slice(0, 7));
+      s.reportedDays += 1;
+      const submitted = requests.get(d.id)?.submittedAt;
+      if (submitted && dateOf(submitted) > d.reportDate) s.lateDays += 1;
+    }
+    const geofenceKey = { PASS: 'pass', FAIL: 'fail', UNVERIFIED: 'unverified', OVERRIDE: 'override' } as const;
+    for (const [rows, kind] of [[doctor, 'doctorCalls'], [chemist, 'chemistCalls']] as const) {
+      for (const r of rows) {
+        const d = byDcr.get(r.dcrId);
+        if (!d) continue;
+        const s = of(d.userId, d.reportDate.slice(0, 7));
+        s[kind] += r.count;
+        s.geofence[geofenceKey[r.status]] += r.count;
+      }
+    }
+    for (const r of unplanned) {
+      const d = byDcr.get(r.dcrId);
+      if (d) of(d.userId, d.reportDate.slice(0, 7)).notInPlan += r.count;
+    }
+    for (const r of followUnplanned) {
+      const d = byDcr.get(r.dcrId);
+      if (d) of(d.userId, d.reportDate.slice(0, 7)).followupsNotInPlan += r.count;
+    }
+    for (const r of [...doctorOffRoute, ...chemistOffRoute]) {
+      const d = byDcr.get(r.dcrId);
+      if (d) of(d.userId, d.reportDate.slice(0, 7)).offRouteCalls += r.count;
+    }
+    for (const r of follow) {
+      const d = byDcr.get(r.dcrId);
+      if (d) of(d.userId, d.reportDate.slice(0, 7)).followups += r.count;
+    }
+    return [...out.values()];
+  }
+}
+
+/** The Doctors an employee called on in their reported days of a range (both ends inclusive): the coverage report's input. */
+export class ListCalledDoctorsUseCase {
+  constructor(
+    private readonly dcrs: DcrRepositoryPort,
+    private readonly approvals: ApprovalsPort,
+    private readonly doctorCalls: DoctorCallRepositoryPort,
+  ) {}
+
+  async execute(userId: string, range: { from: string; to: string }): Promise<string[]> {
+    const mine = await this.dcrs.listForUsers([userId], range.from, range.to);
+    const requests = new Map((await this.approvals.listForRecords(DCR_KIND, mine.map((d) => d.id))).map((r) => [r.recordId, r]));
+    const reported = mine.filter((d) => isQualifyingDcr(dcrStatus(requests.get(d.id) ?? null))).map((d) => d.id);
+    return this.doctorCalls.distinctDoctorIds(reported);
+  }
+}
+
+/** How many calls each Doctor had in the reported days of a range (both ends inclusive), by any employee: the visit-frequency report's input. */
+export class CountDoctorCallsUseCase {
+  constructor(
+    private readonly dcrs: DcrRepositoryPort,
+    private readonly approvals: ApprovalsPort,
+    private readonly doctorCalls: DoctorCallRepositoryPort,
+  ) {}
+
+  async execute(range: { from: string; to: string }): Promise<Array<{ doctorId: string; count: number }>> {
+    const all = await this.dcrs.listRange(range.from, range.to);
+    const requests = new Map((await this.approvals.listForRecords(DCR_KIND, all.map((d) => d.id))).map((r) => [r.recordId, r]));
+    const reported = all.filter((d) => isQualifyingDcr(dcrStatus(requests.get(d.id) ?? null))).map((d) => d.id);
+    return this.doctorCalls.countByDoctor(reported);
+  }
+}
+
+/**
+ * Doctor calls per employee per day over a range (both ends inclusive), in three queries however many reports: the Attendance calendar's
+ * figure. A call counts once its DCR is final — approved while `DCR_APPROVAL_REQUIRED` is on, submitted or later once it is off.
+ */
+export class CountDoctorCallsByDayUseCase {
+  constructor(
+    private readonly dcrs: DcrRepositoryPort,
+    private readonly approvals: ApprovalsPort,
+    private readonly doctorCalls: DoctorCallRepositoryPort,
+    private readonly config: ConfigReader,
+  ) {}
+
+  async execute(range: { from: string; to: string }): Promise<Array<{ userId: string; date: string; count: number }>> {
+    const approvalRequired = await readConfig(this.config, 'DCR_APPROVAL_REQUIRED', parseBoolean);
+    const all = await this.dcrs.listRange(range.from, range.to);
+    const requests = new Map((await this.approvals.listForRecords(DCR_KIND, all.map((d) => d.id))).map((r) => [r.recordId, r]));
+    const counted = all.filter((d) => {
+      const status = dcrStatus(requests.get(d.id) ?? null);
+      return approvalRequired ? isApprovedDcr(status) : isQualifyingDcr(status);
+    });
+    const counts = await this.doctorCalls.countForDcrs(counted.map((d) => d.id));
+    return counted.flatMap((d) => {
+      const count = counts.get(d.id) ?? 0;
+      return count > 0 ? [{ userId: d.userId, date: d.reportDate, count }] : [];
+    });
+  }
+}

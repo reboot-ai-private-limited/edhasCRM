@@ -1,0 +1,115 @@
+import type { RequestHandler } from 'express';
+import type { z } from 'zod';
+import { AppError } from '@/shared/errors/AppError.js';
+import { asyncHandler } from '@/shared/http/asyncHandler.js';
+import { requiredParam } from '@/shared/http/params.util.js';
+import { sendSuccess } from '@/shared/http/response.util.js';
+import type { DcrReport } from '../application/dcrReport.js';
+import type { OrdersReport } from '../application/ordersReport.js';
+import type { DoctorVisitsReport } from '../application/doctorVisitsReport.js';
+import type { EmployeeSalesReport } from '../application/employeeSalesReport.js';
+import type { TeamOverviewReport } from '../application/teamOverviewReport.js';
+import type { SalesBreakdownReport } from '../application/salesBreakdownReport.js';
+import type { SalesDashboardReport } from '../application/salesDashboardReport.js';
+import type { SalesReport } from '../application/salesReport.js';
+import type { SalaryReport } from '../application/salaryReport.js';
+import type { StockReport } from '../application/stockReport.js';
+import type { TaDaReport } from '../application/taDaReport.js';
+import type { myMonthQuerySchema, doctorVisitsQuerySchema, dcrCoverageQuerySchema, employeeSalesQuerySchema, dcrYearQuerySchema, ordersQuerySchema, salaryYearQuerySchema, salesDashboardQuerySchema, salesByProductQuerySchema, salesByDistributorQuerySchema, salesByEmployeeQuerySchema, teamOverviewQuerySchema, salesStatementQuerySchema, salesYearQuerySchema, stockQuerySchema, taDaDaysQuerySchema, taDaYearQuerySchema } from './reports.schemas.js';
+
+export function makeReportsControllers(orders: OrdersReport, sales: SalesReport, stock: StockReport, taDa: TaDaReport, dcr: DcrReport, salary: SalaryReport, salesDashboard: SalesDashboardReport, employeeSales: EmployeeSalesReport, doctorVisits: DoctorVisitsReport, teamOverview: TeamOverviewReport, breakdown: SalesBreakdownReport): Record<'salesByProduct' | 'salesByDistributor' | 'salesByEmployee' | 'orders' | 'doctorVisits' | 'teamOverview' | 'salesDashboard' | 'employeeSales' | 'order' | 'salesYear' | 'salesStatement' | 'stock' | 'taDaYear' | 'taDaDays' | 'dcrYear' | 'dcrCoverage' | 'salaryYear' | 'myTaDaYear' | 'myTaDaDays' | 'myDcrYear' | 'myDcrCoverage', RequestHandler> {
+  return {
+    orders: asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.output<typeof ordersQuerySchema>;
+      sendSuccess(req, res, await orders.month({ month: q.month, type: q.type, status: q.status, mrId: q.mrId }), 'Orders for the month.', 200);
+    }),
+    salesYear: asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.output<typeof salesYearQuerySchema>;
+      sendSuccess(req, res, await sales.year({ year: q.year, distributorId: q.distributorId, productId: q.productId }), 'Sales for the financial year.', 200);
+    }),
+    salesByProduct: asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.output<typeof salesByProductQuerySchema>;
+      sendSuccess(req, res, await breakdown.byProduct(q), 'Sales by product.', 200);
+    }),
+    salesByDistributor: asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.output<typeof salesByDistributorQuerySchema>;
+      sendSuccess(req, res, await breakdown.byDistributor(q), 'Sales by distributor.', 200);
+    }),
+    salesByEmployee: asyncHandler(async (req, res) => {
+      if (!req.user) throw AppError.unauthenticated();
+      const q = req.query as unknown as z.output<typeof salesByEmployeeQuerySchema>;
+      sendSuccess(req, res, await breakdown.byEmployee({ ...q, actor: { id: req.user.sub, role: req.user.role } }), 'Sales by employee.', 200);
+    }),
+    salesStatement: asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.output<typeof salesStatementQuerySchema>;
+      sendSuccess(req, res, await sales.statement({ month: q.month, distributorId: q.distributorId, productId: q.productId }), 'The stock and sales statement.', 200);
+    }),
+    stock: asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.output<typeof stockQuerySchema>;
+      sendSuccess(req, res, await stock.month({ month: q.month }), 'Stock counts for the month.', 200);
+    }),
+    taDaYear: asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.output<typeof taDaYearQuerySchema>;
+      sendSuccess(req, res, await taDa.year({ year: q.year }), 'TA and DA for the financial year.', 200);
+    }),
+    taDaDays: asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.output<typeof taDaDaysQuerySchema>;
+      sendSuccess(req, res, await taDa.days({ userId: q.userId, month: q.month }), 'TA and DA, day by day.', 200);
+    }),
+    dcrYear: asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.output<typeof dcrYearQuerySchema>;
+      sendSuccess(req, res, await dcr.year({ year: q.year }), 'Daily reports for the financial year.', 200);
+    }),
+    dcrCoverage: asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.output<typeof dcrCoverageQuerySchema>;
+      sendSuccess(req, res, await dcr.coverage({ userId: q.userId, month: q.month }), 'Doctor coverage for the month.', 200);
+    }),
+    myTaDaYear: asyncHandler(async (req, res) => {
+      if (!req.user) throw AppError.unauthenticated();
+      const q = req.query as unknown as z.output<typeof taDaYearQuerySchema>;
+      sendSuccess(req, res, await taDa.year({ year: q.year, userId: req.user.sub }), 'Your TA and DA for the financial year.', 200);
+    }),
+    myTaDaDays: asyncHandler(async (req, res) => {
+      if (!req.user) throw AppError.unauthenticated();
+      const q = req.query as unknown as z.output<typeof myMonthQuerySchema>;
+      sendSuccess(req, res, await taDa.days({ userId: req.user.sub, month: q.month }), 'Your TA and DA, day by day.', 200);
+    }),
+    myDcrYear: asyncHandler(async (req, res) => {
+      if (!req.user) throw AppError.unauthenticated();
+      const q = req.query as unknown as z.output<typeof dcrYearQuerySchema>;
+      sendSuccess(req, res, await dcr.year({ year: q.year, userId: req.user.sub }), 'Your daily reports for the financial year.', 200);
+    }),
+    myDcrCoverage: asyncHandler(async (req, res) => {
+      if (!req.user) throw AppError.unauthenticated();
+      const q = req.query as unknown as z.output<typeof myMonthQuerySchema>;
+      sendSuccess(req, res, await dcr.coverage({ userId: req.user.sub, month: q.month }), 'Your doctor coverage for the month.', 200);
+    }),
+    salaryYear: asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.output<typeof salaryYearQuerySchema>;
+      sendSuccess(req, res, await salary.year({ year: q.year }), 'Salary for the financial year.', 200);
+    }),
+    employeeSales: asyncHandler(async (req, res) => {
+      if (!req.user) throw AppError.unauthenticated();
+      const q = req.query as unknown as z.output<typeof employeeSalesQuerySchema>;
+      sendSuccess(req, res, await employeeSales.read({ actor: { id: req.user.sub, role: req.user.role }, userId: q.userId, from: q.from, to: q.to }), 'The employee\'s targets, primary and secondary.', 200);
+    }),
+    salesDashboard: asyncHandler(async (req, res) => {
+      if (!req.user) throw AppError.unauthenticated();
+      const q = req.query as unknown as z.output<typeof salesDashboardQuerySchema>;
+      sendSuccess(req, res, await salesDashboard.read({ actor: { id: req.user.sub, role: req.user.role }, from: q.from, to: q.to, search: q.search, page: q.page, pageSize: q.pageSize }), 'The sales dashboard.', 200);
+    }),
+    teamOverview: asyncHandler(async (req, res) => {
+      if (!req.user) throw AppError.unauthenticated();
+      const q = req.query as unknown as z.output<typeof teamOverviewQuerySchema>;
+      sendSuccess(req, res, await teamOverview.read({ actor: { id: req.user.sub, role: req.user.role }, month: q.month, scope: q.scope, userId: q.userId, search: q.search, page: q.page, pageSize: q.pageSize }), 'The team overview.', 200);
+    }),
+    doctorVisits: asyncHandler(async (req, res) => {
+      if (!req.user) throw AppError.unauthenticated();
+      const q = req.query as unknown as z.output<typeof doctorVisitsQuerySchema>;
+      sendSuccess(req, res, await doctorVisits.month({ actor: { id: req.user.sub, role: req.user.role }, month: q.month, userId: q.userId }), 'Doctor visits for the month.', 200);
+    }),
+    order: asyncHandler(async (req, res) => {
+      sendSuccess(req, res, await orders.detail(requiredParam(req.params, 'id')), 'The order.', 200);
+    }),
+  };
+}

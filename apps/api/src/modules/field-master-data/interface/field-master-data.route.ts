@@ -1,0 +1,225 @@
+import { Router } from 'express';
+import type { AnyZodObject, ZodTypeAny } from 'zod';
+import { authenticate } from '@/shared/http/authenticate.middleware.js';
+import { requireRole } from '@/shared/http/authorize.middleware.js';
+import type { RoleName } from '@edhas/contracts';
+import { openApiRegistry } from '@/shared/http/swagger.util.js';
+import { photoUpload } from '@/shared/http/photoUpload.middleware.js';
+import { validate } from '@/shared/http/validate.middleware.js';
+import multer from 'multer';
+import type { NextFunction, Request, Response } from 'express';
+import { AppError } from '@/shared/errors/AppError.js';
+import { MAX_DISTRIBUTOR_DOCUMENT_BYTES } from '../domain/distributorDocumentFile.js';
+import type { AddedChemistHandlers, CrudHandlers, DistributorHandlers, DoctorHandlers } from './field-master-data.controller.js';
+import {
+  addDoctorBodySchema,
+  adjustSampleBodySchema,
+  assignDoctorBodySchema,
+  addChemistBodySchema,
+  createChemistBodySchema,
+  createDistributorBodySchema,
+  distributorDocumentBodySchema,
+  distributorDocumentParamsSchema,
+  createDoctorBodySchema,
+  createProductBodySchema,
+  createSpecialtyBodySchema,
+  listSpecialtiesQuerySchema,
+  updateSpecialtyBodySchema,
+  doctorAssignmentParamsSchema,
+  editAddedChemistBodySchema,
+  editAddedDoctorBodySchema,
+  idParamsSchema,
+  issueSampleBodySchema,
+  listAddedChemistsQuerySchema,
+  listAddedDoctorsQuerySchema,
+  listAssignedDoctorsQuerySchema,
+  listChemistsQuerySchema,
+  listDistributorsQuerySchema,
+  listDoctorsQuerySchema,
+  listProductsQuerySchema,
+  sampleAllocationParamsSchema,
+  teamDoctorsQuerySchema,
+  employeeDoctorsQuerySchema,
+  updateChemistBodySchema,
+  updateDistributorBodySchema,
+  reviewDoctorBodySchema,
+  updateDoctorBodySchema,
+  updateDoctorTargetsBodySchema,
+  updateProductBodySchema,
+} from './field-master-data.schemas.js';
+
+const TAG = 'Field Master Data';
+const bearer = [{ bearerAuth: [] }];
+const json = (schema: ZodTypeAny) => ({ content: { 'application/json': { schema } } });
+
+function doc(
+  method: 'get' | 'post' | 'put' | 'patch' | 'delete',
+  path: string,
+  summary: string,
+  request: { query?: AnyZodObject; params?: AnyZodObject; body?: ZodTypeAny } = {},
+): void {
+  openApiRegistry.registerPath({
+    method,
+    path: `/api/field-master-data${path}`,
+    tags: [TAG],
+    summary,
+    security: bearer,
+    request: {
+      ...(request.query && { query: request.query }),
+      ...(request.params && { params: request.params }),
+      ...(request.body && { body: json(request.body) }),
+    },
+    responses: { 200: { description: 'OK' } },
+  });
+}
+
+doc('get', '/products', 'Admin or the Accountant: list products', { query: listProductsQuerySchema });
+doc('post', '/products', 'Admin: add a product', { body: createProductBodySchema });
+doc('get', '/products/{id}', 'Admin or the Accountant: one product', { params: idParamsSchema });
+doc('patch', '/products/{id}', 'Admin: edit or deactivate a product', { params: idParamsSchema, body: updateProductBodySchema });
+doc('get', '/specialties', 'Admin: list the specialities a doctor can have', { query: listSpecialtiesQuerySchema });
+doc('post', '/specialties', 'Admin: add a speciality', { body: createSpecialtyBodySchema });
+doc('get', '/specialties/{id}', 'Admin: one speciality', { params: idParamsSchema });
+doc('patch', '/specialties/{id}', 'Admin: rename (also on its doctors) or deactivate a speciality', { params: idParamsSchema, body: updateSpecialtyBodySchema });
+doc('get', '/chemists', 'Admin or Accountant: list chemists', { query: listChemistsQuerySchema });
+doc('post', '/chemists', 'Admin: add a chemist on a route, with a map-picked location', { body: createChemistBodySchema });
+doc('get', '/chemists/{id}', 'Admin or Accountant: one chemist', { params: idParamsSchema });
+doc('patch', '/chemists/{id}', 'Admin: edit a chemist, including correcting its location', { params: idParamsSchema, body: updateChemistBodySchema });
+
+doc('get', '/doctors', 'Admin: list doctors', { query: listDoctorsQuerySchema });
+doc('post', '/doctors', 'Admin: add a doctor on a route, with a map-picked location', { body: createDoctorBodySchema });
+doc('patch', '/doctors/{id}/targets', 'Manager or Admin: set a doctor’s monthly visit frequency (1–6), date of birth and anniversary', { params: idParamsSchema, body: updateDoctorTargetsBodySchema });
+doc('get', '/doctors/mine', 'Field staff: the doctors assigned to me, on routes I still have', { query: listAssignedDoctorsQuerySchema });
+doc('get', '/doctors/team', 'Managers: the doctors of everyone in my downline', { query: teamDoctorsQuerySchema });
+doc('get', '/doctors/assigned', 'Admin: the doctors assigned to one employee, as that employee sees them', { query: employeeDoctorsQuerySchema });
+doc('get', '/chemists/added', 'Field staff: the chemists I added, with where each is in its approval', { query: listAddedChemistsQuerySchema });
+doc('post', '/chemists/added', 'Field staff: add a chemist with the phone’s location (offline-first) — it goes to my manager, then Admin', { body: addChemistBodySchema });
+doc('put', '/chemists/added/{id}', 'Field staff: change a rejected, withdrawn or reopened chemist — resubmits it', { params: idParamsSchema, body: editAddedChemistBodySchema });
+doc('get', '/doctors/added', 'Field staff: the doctors I added, with where each is in its approval', { query: listAddedDoctorsQuerySchema });
+doc('post', '/doctors/added', 'Field staff: add a doctor (offline-first) — it goes to my manager, then Admin', { body: addDoctorBodySchema });
+doc('put', '/doctors/added/{id}', 'Field staff: change a rejected, withdrawn or reopened doctor — resubmits it', { params: idParamsSchema, body: editAddedDoctorBodySchema });
+doc('put', '/doctors/added/{id}/photo', 'Field staff: set or replace the photo of a doctor I added (multipart `file`, JPG/PNG/WebP, 5 MB), until it is approved. Does not resubmit it', { params: idParamsSchema });
+doc('delete', '/doctors/added/{id}/photo', 'Field staff: remove the photo of a doctor I added, until it is approved', { params: idParamsSchema });
+doc('put', '/doctors/{id}/photo', 'Admin: set or replace a doctor’s photo (multipart `file`, JPG/PNG/WebP, 5 MB); the old file is deleted', { params: idParamsSchema });
+doc('delete', '/doctors/{id}/photo', 'Admin: remove a doctor’s photo (deleted from storage)', { params: idParamsSchema });
+doc('patch', '/doctors/{id}/review', 'Manager or Admin: correct a doctor waiting for approval (any detail, including its location) before approving', { params: idParamsSchema, body: reviewDoctorBodySchema });
+doc('get', '/doctors/{id}', 'A doctor — Admin, the assigned MR, or their manager', { params: idParamsSchema });
+doc('patch', '/doctors/{id}', 'Admin: edit a doctor, including correcting its location (also while inactive). status: inactive also ends its MR assignment and takes it off editable Daily Plans', { params: idParamsSchema, body: updateDoctorBodySchema });
+doc('get', '/doctors/{id}/impact', 'Admin: what deactivating or deleting a doctor touches (assigned MR, plans from today, calls, open gifts/services, samples, visuals)', { params: idParamsSchema });
+doc('delete', '/doctors/{id}', 'Admin: delete a doctor for good. It is archived (history keeps its name), its assignments go, and it leaves every editable Daily Plan. Not for a doctor waiting for approval', { params: idParamsSchema });
+doc('get', '/doctors/{id}/assignments', 'Admin: who has been responsible for a doctor', { params: idParamsSchema });
+doc('post', '/doctors/{id}/assignments', 'Admin: make an MR responsible for a doctor, replacing the current one', { params: idParamsSchema, body: assignDoctorBodySchema });
+doc('delete', '/doctors/{id}/assignments/{userId}', 'Admin: remove an MR’s assignment', { params: doctorAssignmentParamsSchema });
+
+doc('get', '/distributors', 'Admin: list distributors, by route or the HQ / zone above it', { query: listDistributorsQuerySchema });
+doc('post', '/distributors', 'Admin or Accountant: add a distributor on a route', { body: createDistributorBodySchema });
+doc('get', '/distributors/{id}', 'Admin: one distributor, with its zone → HQ → route breadcrumb', { params: idParamsSchema });
+doc('get', '/distributors/{id}/impact', 'Admin: what deleting a distributor would erase — payments, orders, stock, files', { params: idParamsSchema });
+doc('delete', '/distributors/{id}', 'Admin: permanently delete a distributor and its payments, orders and stock history', { params: idParamsSchema });
+doc('post', '/distributors/{id}/documents', 'Admin or Accountant: attach a file (PDF, JPG or PNG, up to 10 MB) to a distributor');
+doc('delete', '/distributors/{id}/documents/{documentId}', 'Admin or Accountant: remove a distributor\'s file', { params: distributorDocumentParamsSchema });
+doc('patch', '/distributors/{id}', 'Admin or Accountant: edit a distributor, reassign its MR / ASM', { params: idParamsSchema, body: updateDistributorBodySchema });
+doc('get', '/doctors/{id}/sample-allocations', 'A doctor’s sample allocations and what is left — Admin, the assigned MR, or their manager', { params: idParamsSchema });
+doc('post', '/doctors/{id}/sample-allocations', 'Admin: issue samples of a product for a doctor (adds to an existing allocation)', { params: idParamsSchema, body: issueSampleBodySchema });
+doc('patch', '/doctors/{id}/sample-allocations/{productId}', 'Admin: correct the allocated total (not below what was given out)', { params: sampleAllocationParamsSchema, body: adjustSampleBodySchema });
+
+const documentUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_DISTRIBUTOR_DOCUMENT_BYTES } }).single('file');
+
+/** Turns multer's error-first callback (a bad file or size) into the AppError path everything else uses. */
+function documentUploadMiddleware(req: Request, res: Response, next: NextFunction): void {
+  documentUpload(req, res, (err: unknown) => next(err ? AppError.badRequest(err instanceof Error ? err.message : 'Invalid file upload.') : undefined));
+}
+
+/** Admin and Accountant manage a distributor's files; the rest of the record is the plain CRUD above them. */
+function distributorsRouter(c: DistributorHandlers): Router {
+  const writers = ['ADMIN', 'ACCOUNTANT'] as const;
+  const router = Router();
+  router.post('/:id/documents', authenticate(), requireRole(...writers), validate({ params: idParamsSchema }), documentUploadMiddleware, validate({ body: distributorDocumentBodySchema }), c.uploadDocument);
+  router.delete('/:id/documents/:documentId', authenticate(), requireRole(...writers), validate({ params: distributorDocumentParamsSchema }), c.removeDocument);
+  // Deleting is Admin's alone, though the Accountant is a writer above: the role is named here, not taken from `writers`.
+  router.get('/:id/impact', authenticate(), requireRole('ADMIN'), validate({ params: idParamsSchema }), c.impact);
+  router.delete('/:id', authenticate(), requireRole('ADMIN'), validate({ params: idParamsSchema }), c.remove);
+  router.use(crudRouter(c, { list: listDistributorsQuerySchema, create: createDistributorBodySchema, update: updateDistributorBodySchema }, ['ADMIN', 'ACCOUNTANT'], writers)); // the Accountant adds and edits them, and records their payments
+  return router;
+}
+
+function crudRouter(
+  c: CrudHandlers,
+  schemas: { list: AnyZodObject; create: ZodTypeAny; update: ZodTypeAny },
+  /** Who may read (the list and one record). */
+  readers: readonly RoleName[] = ['ADMIN'],
+  /** Who may add and edit; Admin alone unless given. */
+  writers: readonly RoleName[] = ['ADMIN'],
+): Router {
+  const router = Router();
+  const admin = requireRole(...writers);
+  router.use(authenticate());
+  router.get('/', requireRole(...readers), validate({ query: schemas.list }), c.list);
+  router.post('/', admin, validate({ body: schemas.create }), c.create);
+  router.get('/:id', requireRole(...readers), validate({ params: idParamsSchema }), c.get);
+  router.patch('/:id', admin, validate({ params: idParamsSchema, body: schemas.update }), c.update);
+  return router;
+}
+
+/** Field staff add Chemists (and see theirs); `/chemists/added` is mounted before the Admin/Accountant `/chemists/:id`. */
+function addedChemistsRouter(c: AddedChemistHandlers): Router {
+  const router = Router();
+  router.use(authenticate());
+  const field = requireRole('FIELD');
+  router.get('/', field, validate({ query: listAddedChemistsQuerySchema }), c.added);
+  router.post('/', field, validate({ body: addChemistBodySchema }), c.add);
+  router.put('/:id', field, validate({ params: idParamsSchema, body: editAddedChemistBodySchema }), c.edit);
+  return router;
+}
+
+/** Field staff read their own Doctors and add new ones; everything else is Admin's. `/added`, `/mine` and `/team` come before `/:id`. */
+function doctorsRouter(c: DoctorHandlers): Router {
+  const router = Router();
+  router.use(authenticate());
+  const admin = requireRole('ADMIN');
+  const field = requireRole('FIELD');
+  router.get('/mine', field, validate({ query: listAssignedDoctorsQuerySchema }), c.mine);
+  router.get('/team', field, validate({ query: teamDoctorsQuerySchema }), c.team);
+  router.get('/assigned', admin, validate({ query: employeeDoctorsQuerySchema }), c.assignedTo);
+  router.get('/added', field, validate({ query: listAddedDoctorsQuerySchema }), c.added);
+  router.post('/added', field, validate({ body: addDoctorBodySchema }), c.addDoctor);
+  router.put('/added/:id', field, validate({ params: idParamsSchema, body: editAddedDoctorBodySchema }), c.editAdded);
+  router.put('/added/:id/photo', field, validate({ params: idParamsSchema }), photoUpload, c.setPhoto);
+  router.delete('/added/:id/photo', field, validate({ params: idParamsSchema }), c.removePhoto);
+  router.put('/:id/photo', admin, validate({ params: idParamsSchema }), photoUpload, c.setPhoto);
+  router.delete('/:id/photo', admin, validate({ params: idParamsSchema }), c.removePhoto);
+  router.get('/', admin, validate({ query: listDoctorsQuerySchema }), c.list);
+  router.post('/', admin, validate({ body: createDoctorBodySchema }), c.create);
+  // Admin, or a FIELD employee the use case checks (the assigned MR, or their manager).
+  router.get('/:id', requireRole('ADMIN', 'FIELD'), validate({ params: idParamsSchema }), c.get);
+  router.patch('/:id/review', requireRole('ADMIN', 'FIELD'), validate({ params: idParamsSchema, body: reviewDoctorBodySchema }), c.review);
+  router.patch('/:id', admin, validate({ params: idParamsSchema, body: updateDoctorBodySchema }), c.update);
+  router.delete('/:id', admin, validate({ params: idParamsSchema }), c.remove);
+  router.get('/:id/impact', admin, validate({ params: idParamsSchema }), c.impact);
+  router.patch('/:id/targets', requireRole('ADMIN', 'FIELD'), validate({ params: idParamsSchema, body: updateDoctorTargetsBodySchema }), c.updateTargets);
+  router.get('/:id/assignments', admin, validate({ params: idParamsSchema }), c.listAssignments);
+  router.post('/:id/assignments', admin, validate({ params: idParamsSchema, body: assignDoctorBodySchema }), c.assign);
+  router.get('/:id/sample-allocations', requireRole('ADMIN', 'FIELD'), validate({ params: idParamsSchema }), c.listSamples);
+  router.post('/:id/sample-allocations', admin, validate({ params: idParamsSchema, body: issueSampleBodySchema }), c.issueSample);
+  router.patch('/:id/sample-allocations/:productId', admin, validate({ params: sampleAllocationParamsSchema, body: adjustSampleBodySchema }), c.adjustSample);
+  router.delete('/:id/assignments/:userId', admin, validate({ params: doctorAssignmentParamsSchema }), c.unassign);
+  return router;
+}
+
+export function buildFieldMasterDataRouter(c: {
+  products: CrudHandlers;
+  specialties: CrudHandlers;
+  chemists: CrudHandlers;
+  addedChemists: AddedChemistHandlers;
+  distributors: DistributorHandlers;
+  doctors: DoctorHandlers;
+}): Router {
+  const router = Router();
+  router.use('/doctors', doctorsRouter(c.doctors));
+  router.use('/products', crudRouter(c.products, { list: listProductsQuerySchema, create: createProductBodySchema, update: updateProductBodySchema }, ['ADMIN', 'ACCOUNTANT'])); // the Accountant reads them to add or change an order
+  router.use('/specialties', crudRouter(c.specialties, { list: listSpecialtiesQuerySchema, create: createSpecialtyBodySchema, update: updateSpecialtyBodySchema }));
+  router.use('/distributors', distributorsRouter(c.distributors));
+  router.use('/chemists/added', addedChemistsRouter(c.addedChemists));
+  router.use('/chemists', crudRouter(c.chemists, { list: listChemistsQuerySchema, create: createChemistBodySchema, update: updateChemistBodySchema }, ['ADMIN', 'ACCOUNTANT'])); // the Accountant reads them to add an order for a chemist
+  return router;
+}

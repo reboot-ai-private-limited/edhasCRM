@@ -1,0 +1,558 @@
+import { Router } from 'express';
+import { env } from '@/config/env.js';
+import { ApproveDeviceUseCase } from './application/usecases/approveDevice.usecase.js';
+import { ListPendingDevicesUseCase } from './application/usecases/listPendingDevices.usecase.js';
+import { ListUserDevicesUseCase } from './application/usecases/listUserDevices.usecase.js';
+import { LogoutDeviceUseCase } from './application/usecases/logoutDevice.usecase.js';
+import { RejectDeviceUseCase } from './application/usecases/rejectDevice.usecase.js';
+import { RemoveDeviceUseCase } from './application/usecases/removeDevice.usecase.js';
+import { CreateDesignationUseCase } from './application/usecases/createDesignation.usecase.js';
+import { PromotionPlanner } from './application/usecases/promotionPlanner.js';
+import { ApplyDuePromotionsUseCase } from './application/usecases/applyDuePromotions.usecase.js';
+import { CancelPromotionUseCase, ListAllPromotionsUseCase, ListPromotionsUseCase, PreviewPromotionUseCase, SchedulePromotionUseCase } from './application/usecases/promotions.usecase.js';
+import { AssignCtcUseCase } from './application/usecases/assignCtc.usecase.js';
+import { CreatePayComponentUseCase } from './application/usecases/createPayComponent.usecase.js';
+import { GetCtcForMonthUseCase } from './application/usecases/getCtcForMonth.usecase.js';
+import { ListCtcHistoryUseCase } from './application/usecases/listCtcHistory.usecase.js';
+import { ListPayComponentsUseCase } from './application/usecases/listPayComponents.usecase.js';
+import { ConfigCtcContext } from './application/usecases/ctcContext.js';
+import { PreviewCtcUseCase } from './application/usecases/previewCtc.usecase.js';
+import { ReapplyCtcUseCase } from './application/usecases/reapplyCtc.usecase.js';
+import { SeedDefaultPayComponentsUseCase } from './application/usecases/seedDefaultPayComponents.usecase.js';
+import { UpdatePayComponentUseCase } from './application/usecases/updatePayComponent.usecase.js';
+import { MongoCtcAssignmentAdapter } from './infrastructure/mongoCtcAssignment.adapter.js';
+import { MongoPayComponentAdapter } from './infrastructure/mongoPayComponent.adapter.js';
+import { makeCtcControllers } from './interface/ctc.controller.js';
+import { buildCtcRouter, buildPayComponentsRouter, buildUserCtcRouter } from './interface/ctc.route.js';
+import { CreatePayBandUseCase } from './application/usecases/createPayBand.usecase.js';
+import { CreateRoleUseCase } from './application/usecases/createRole.usecase.js';
+import {
+  CreateEmployeeDraftUseCase,
+  DeleteEmployeeDraftUseCase,
+  GetEmployeeDraftUseCase,
+  ListEmployeeDraftsUseCase,
+  UpdateEmployeeDraftUseCase,
+} from './application/usecases/employeeDrafts.usecase.js';
+import { FinalizeEmployeeDraftUseCase, type CoverageAssigner, type HqAssigner, type RouteAssigner } from './application/usecases/finalizeEmployeeDraft.usecase.js';
+import { MongoEmployeeDraftAdapter } from './infrastructure/mongoEmployeeDraft.adapter.js';
+import { MongoEmployeeCodeGenerator } from './infrastructure/mongoEmployeeCodeGenerator.adapter.js';
+import { makeEmployeeDraftControllers } from './interface/employeeDrafts.controller.js';
+import { buildEmployeeDraftsRouter } from './interface/employeeDrafts.route.js';
+import { CreateUserUseCase } from './application/usecases/createUser.usecase.js';
+import { GetActiveDeviceCountUseCase } from './application/usecases/getActiveDeviceCount.usecase.js';
+import { GetDirectReportsUseCase } from './application/usecases/getDirectReports.usecase.js';
+import { GetDownlineUseCase } from './application/usecases/getDownline.usecase.js';
+import { GetEmploymentDetailsUseCase } from './application/usecases/getEmploymentDetails.usecase.js';
+import { GetReportingLineUseCase } from './application/usecases/getReportingLine.usecase.js';
+import { GetManagerChainUseCase } from './application/usecases/getManagerChain.usecase.js';
+import { GetPayBandRatesUseCase } from './application/usecases/getPayBandRates.usecase.js';
+import { GetUserDetailUseCase } from './application/usecases/getUserDetail.usecase.js';
+import { GetUserSummariesUseCase } from './application/usecases/getUserSummaries.usecase.js';
+import { GetUserSummaryUseCase } from './application/usecases/getUserSummary.usecase.js';
+import { BlockUserUseCase } from './application/usecases/blockUser.usecase.js';
+import { IsBlockedUseCase } from './application/usecases/isBlocked.usecase.js';
+import { IsFieldRoleUseCase } from './application/usecases/isFieldRole.usecase.js';
+import { ListDesignationsUseCase } from './application/usecases/listDesignations.usecase.js';
+import { ListPayBandsUseCase } from './application/usecases/listPayBands.usecase.js';
+import { ListRolesUseCase } from './application/usecases/listRoles.usecase.js';
+import { ListUsersUseCase } from './application/usecases/listUsers.usecase.js';
+import { LoginUseCase } from './application/usecases/login.usecase.js';
+import { LogoutUseCase } from './application/usecases/logout.usecase.js';
+import { LogoutAllSessionsUseCase } from './application/usecases/logoutAllSessions.usecase.js';
+import { RefreshSessionUseCase } from './application/usecases/refreshSession.usecase.js';
+import { RemoveDraftPhotoUseCase, RemoveEmployeePhotoUseCase, SetDraftPhotoUseCase, SetEmployeePhotoUseCase } from './application/usecases/employeePhoto.usecase.js';
+import { CloudinaryPhotoStorage } from '@/shared/storage/cloudinaryPhotoStorage.adapter.js';
+import { RemoveUserDocumentUseCase } from './application/usecases/removeUserDocument.usecase.js';
+import { ChangePasswordUseCase } from './application/usecases/changePassword.usecase.js';
+import { DeleteAccountUseCase } from './application/usecases/deleteAccount.usecase.js';
+import { ResetPasswordUseCase } from './application/usecases/resetPassword.usecase.js';
+import type { BootstrapAdminInput } from './application/usecases/seedBootstrapAdmin.usecase.js';
+import { SeedBootstrapAdminUseCase } from './application/usecases/seedBootstrapAdmin.usecase.js';
+import { SeedDefaultRolesUseCase } from './application/usecases/seedDefaultRoles.usecase.js';
+import { UnblockUserUseCase } from './application/usecases/unblockUser.usecase.js';
+import { UpdatePayBandUseCase } from './application/usecases/updatePayBand.usecase.js';
+import { UpdateRoleUseCase } from './application/usecases/updateRole.usecase.js';
+import { UpdateUserUseCase } from './application/usecases/updateUser.usecase.js';
+import { UploadUserDocumentUseCase } from './application/usecases/uploadUserDocument.usecase.js';
+import type { ConfigProviderPort } from './domain/configProvider.port.js';
+import { BcryptPasswordHasher } from './infrastructure/bcryptPasswordHasher.adapter.js';
+import { CloudinaryDocumentStorage } from './infrastructure/cloudinaryDocumentStorage.adapter.js';
+import { CryptoRefreshTokenGenerator } from './infrastructure/cryptoRefreshTokenGenerator.adapter.js';
+import { JwtAccessTokenSigner } from './infrastructure/jwtAccessTokenSigner.adapter.js';
+import { MongoComplianceBlockAdapter } from './infrastructure/mongoComplianceBlock.adapter.js';
+import { MongoDesignationAdapter } from './infrastructure/mongoDesignation.adapter.js';
+import { MongoEmployeeProfileAdapter } from './infrastructure/mongoEmployeeProfile.adapter.js';
+import { MongoManagerHistoryAdapter } from './infrastructure/mongoManagerHistory.adapter.js';
+import { MongoPromotionAdapter } from './infrastructure/mongoPromotion.adapter.js';
+import { MongoPayBandAdapter } from './infrastructure/mongoPayBand.adapter.js';
+import { MongoRoleAdapter } from './infrastructure/mongoRole.adapter.js';
+import { MongoUserAdapter } from './infrastructure/mongoUser.adapter.js';
+import { MongoUserDeviceAdapter } from './infrastructure/mongoUserDevice.adapter.js';
+import { MongoUserSessionAdapter } from './infrastructure/mongoUserSession.adapter.js';
+import { MongoPushTokenAdapter } from './infrastructure/mongoPushToken.adapter.js';
+import { PushTokenUseCase } from './application/usecases/pushToken.usecase.js';
+import { businessDate } from '@/shared/time/businessTime.js';
+import { readBusinessDay } from '@/shared/config/readConfig.js';
+import { MongooseTransactionRunner } from '@/shared/db/mongooseTransactionRunner.js';
+import {
+  makeLoginController,
+  makeForgotPasswordController,
+  makeResetAdminPasswordController,
+  makeChangePasswordController,
+  makeDeleteAccountController,
+  makeDeleteAccountPublicController,
+  makeLogoutAllController,
+  makeLogoutController,
+  makePushTokenController,
+  makeMeController,
+  makeRefreshController,
+} from './interface/auth.controller.js';
+import { buildAuthRouter } from './interface/auth.route.js';
+import { buildDesignationsRouter } from './interface/designations.route.js';
+import {
+  makeApproveDeviceController,
+  makeListPendingDevicesController,
+  makeListUserDevicesController,
+  makeLogoutDeviceController,
+  makeRejectDeviceController,
+  makeRemoveDeviceController,
+} from './interface/devices.controller.js';
+import { buildDevicesRouter } from './interface/devices.route.js';
+import { makePromotionControllers } from './interface/promotions.controller.js';
+import { buildPromotionsRouter, buildUserPromotionsRouter } from './interface/promotions.route.js';
+import { buildPayBandsRouter } from './interface/payBands.route.js';
+import { buildRolesRouter } from './interface/roles.route.js';
+import {
+  makeCreateUserController,
+  makeGetUserDetailController,
+  makeGetReportingLineController,
+  makeListOrgChildrenController,
+  makeReassignManagerController,
+  makeListUsersController,
+  makeRemoveEmployeePhotoController,
+  makeRemoveUserDocumentController,
+  makeSetEmployeePhotoController,
+  makeResetPasswordController,
+  makeAnonymiseUserController,
+  makeDeactivationControllers,
+  makeUnblockUserController,
+  makeUpdateUserController,
+  makeUploadUserDocumentController,
+} from './interface/users.controller.js';
+import { buildUsersRouter } from './interface/users.route.js';
+import { ReassignManagerUseCase } from './application/usecases/reassignManager.usecase.js';
+import { revokeAccessTokens } from '@/shared/http/accessRevocations.js';
+import { DeactivateEmployeeUseCase } from './application/usecases/deactivateEmployee.usecase.js';
+import type { OffboardingPort } from './domain/offboarding.port.js';
+import { ConfirmAdminPasswordResetUseCase, RequestAdminPasswordResetUseCase } from './application/usecases/adminPasswordReset.usecase.js';
+import { MongoPasswordResetRequestAdapter } from './infrastructure/mongoPasswordResetRequest.adapter.js';
+import { SmtpMailer } from '@/shared/mail/smtpMailer.adapter.js';
+import { buildOrgRouter } from './interface/org.route.js';
+import { ListOrgChildrenUseCase } from './application/usecases/listOrgChildren.usecase.js';
+import { buildWorkWithRouter } from './interface/workWith.route.js';
+import { ListWorkWithUseCase } from './application/usecases/listWorkWith.usecase.js';
+import { NamePeopleUseCase } from './application/usecases/namePeople.usecase.js';
+import type { IdentityPublicContract } from './identity.public.js';
+
+export interface IdentityContainer {
+  contract: IdentityPublicContract;
+  buildRouter: () => Router;
+  /**
+   * These three exist for `scripts/seed.ts` (a second composition root — see
+   * `docs/engineering/module-anatomy.md`), never called from the HTTP boot path. Split apart
+   * rather than one combined method so the script can check `hasAdmin()` BEFORE prompting an
+   * operator for admin details, instead of prompting unconditionally and silently discarding
+   * the input when one already exists.
+   */
+  seedRoles: () => Promise<void>;
+  /** Writes the org's starting CTC formula if none exists yet. */
+  seedPayComponents: () => Promise<void>;
+  /** Applies every promotion whose month has come. The server calls it on start and hourly; safe at any time and from any number of servers. */
+  applyDuePromotions: () => Promise<{ applied: number; failed: number }>;
+  /**
+   * The modules above Identity hold what a leaving employee had (routes, doctors, plans, leave, targets); deactivation releases it
+   * through this port, handed in once they are built.
+   */
+  bindOffboarding: (port: OffboardingPort) => void;
+  /** After a restart: refuses again the access tokens of accounts deactivated within the last token lifetime. */
+  restoreAccessRevocations: () => Promise<number>;
+  /** Territory sits above Identity, so the employee wizard's "set the HQ" is handed in once both are built. */
+  bindHqAssigner: (assign: HqAssigner) => void;
+  /** Likewise the new employee's covered Zones and HQs. */
+  bindCoverageAssigner: (assign: CoverageAssigner) => void;
+  /** Likewise the new MR's routes. */
+  bindRouteAssigner: (assign: RouteAssigner) => void;
+  hasAdmin: () => Promise<boolean>;
+  seedBootstrapAdmin: (input: BootstrapAdminInput) => Promise<void>;
+}
+
+export function buildIdentityContainer(configProvider: ConfigProviderPort): IdentityContainer {
+  // 1. Adapters
+  const roleRepository = new MongoRoleAdapter();
+  const designationRepository = new MongoDesignationAdapter();
+  const payBandRepository = new MongoPayBandAdapter();
+  const payComponentRepository = new MongoPayComponentAdapter();
+  const ctcAssignmentRepository = new MongoCtcAssignmentAdapter();
+  const managerHistoryRepository = new MongoManagerHistoryAdapter();
+  const promotionRepository = new MongoPromotionAdapter();
+  /** The current month in the business timezone, read each time so a changed setting is honoured. */
+  const currentMonth = async (): Promise<string> => {
+    const { timeZone, dayStart } = await readBusinessDay(configProvider);
+    return businessDate(new Date(), timeZone, dayStart).slice(0, 7);
+  };
+  const userRepository = new MongoUserAdapter();
+  const employeeDraftRepository = new MongoEmployeeDraftAdapter();
+  const employeeCodeGenerator = new MongoEmployeeCodeGenerator(userRepository);
+  let hqAssigner: HqAssigner | null = null;
+  let routeAssigner: RouteAssigner | null = null;
+  let coverageAssigner: CoverageAssigner | null = null;
+  const employeeProfileRepository = new MongoEmployeeProfileAdapter();
+  const complianceBlockRepository = new MongoComplianceBlockAdapter();
+  const userSessionRepository = new MongoUserSessionAdapter();
+  const userDeviceRepository = new MongoUserDeviceAdapter();
+  const passwordHasher = new BcryptPasswordHasher(env.BCRYPT_COST_FACTOR);
+  const accessTokenSigner = new JwtAccessTokenSigner();
+  const refreshTokenGenerator = new CryptoRefreshTokenGenerator();
+  const documentStorage = new CloudinaryDocumentStorage();
+  const photoStorage = new CloudinaryPhotoStorage();
+  const transactionRunner = new MongooseTransactionRunner();
+
+  const tokenOpts = {
+    accessTokenTtlSeconds: env.JWT_ACCESS_TOKEN_TTL_SECONDS,
+    refreshTokenTtlDays: env.JWT_REFRESH_TOKEN_TTL_DAYS,
+  };
+
+  // 2. Use cases
+  const login = new LoginUseCase(
+    userRepository,
+    roleRepository,
+    userSessionRepository,
+    userDeviceRepository,
+    passwordHasher,
+    accessTokenSigner,
+    refreshTokenGenerator,
+    configProvider,
+    tokenOpts,
+  );
+  const refreshSession = new RefreshSessionUseCase(
+    userRepository,
+    roleRepository,
+    userSessionRepository,
+    accessTokenSigner,
+    refreshTokenGenerator,
+    tokenOpts,
+  );
+  const logout = new LogoutUseCase(userSessionRepository, refreshTokenGenerator);
+  const logoutAllSessions = new LogoutAllSessionsUseCase(userRepository, userSessionRepository);
+
+  const listPendingDevices = new ListPendingDevicesUseCase(userDeviceRepository, userRepository);
+  const listUserDevices = new ListUserDevicesUseCase(userRepository, userDeviceRepository, userSessionRepository);
+  const approveDevice = new ApproveDeviceUseCase(userDeviceRepository, configProvider);
+  const rejectDevice = new RejectDeviceUseCase(userDeviceRepository, configProvider);
+  const removeDevice = new RemoveDeviceUseCase(userDeviceRepository, userSessionRepository, transactionRunner);
+  const logoutDevice = new LogoutDeviceUseCase(userDeviceRepository, userSessionRepository);
+
+  const createUser = new CreateUserUseCase(userRepository, roleRepository, passwordHasher, employeeCodeGenerator);
+  const updateUser = new UpdateUserUseCase(
+    userRepository,
+    roleRepository,
+    designationRepository,
+    payBandRepository,
+    employeeProfileRepository,
+    managerHistoryRepository,
+    currentMonth,
+  );
+  const listUsers = new ListUsersUseCase(userRepository, roleRepository, employeeProfileRepository);
+  const uploadUserDocument = new UploadUserDocumentUseCase(userRepository, employeeProfileRepository, documentStorage);
+  const removeUserDocument = new RemoveUserDocumentUseCase(employeeProfileRepository, documentStorage);
+  const blockUser = new BlockUserUseCase(userRepository, roleRepository, complianceBlockRepository, transactionRunner);
+  const unblockUser = new UnblockUserUseCase(userRepository, complianceBlockRepository, transactionRunner, (id) => getManagerChain.execute(id));
+  const resetPassword = new ResetPasswordUseCase(userRepository, userSessionRepository, passwordHasher);
+  const changePassword = new ChangePasswordUseCase(userRepository, userSessionRepository, passwordHasher, refreshTokenGenerator);
+  const deleteAccount = new DeleteAccountUseCase(
+    userRepository,
+    roleRepository,
+    employeeProfileRepository,
+    userSessionRepository,
+    userDeviceRepository,
+    passwordHasher,
+    documentStorage,
+  );
+  const getUserDetail = new GetUserDetailUseCase(
+    userRepository,
+    roleRepository,
+    employeeProfileRepository,
+    complianceBlockRepository,
+  );
+
+  const createRole = new CreateRoleUseCase(roleRepository);
+  const listRoles = new ListRolesUseCase(roleRepository);
+  const updateRole = new UpdateRoleUseCase(roleRepository);
+
+  const createDesignation = new CreateDesignationUseCase(designationRepository);
+  const listDesignations = new ListDesignationsUseCase(designationRepository);
+
+  const createPayBand = new CreatePayBandUseCase(payBandRepository);
+  const listPayBands = new ListPayBandsUseCase(payBandRepository);
+  const updatePayBand = new UpdatePayBandUseCase(payBandRepository);
+
+  const listPayComponents = new ListPayComponentsUseCase(payComponentRepository);
+  const createPayComponent = new CreatePayComponentUseCase(payComponentRepository);
+  const updatePayComponent = new UpdatePayComponentUseCase(payComponentRepository);
+  const seedDefaultPayComponents = new SeedDefaultPayComponentsUseCase(payComponentRepository);
+  const ctcContext = new ConfigCtcContext(configProvider);
+  const previewCtc = new PreviewCtcUseCase(payComponentRepository, ctcContext);
+  const assignCtc = new AssignCtcUseCase(userRepository, roleRepository, payComponentRepository, ctcAssignmentRepository, configProvider, ctcContext);
+  const employeeDraftControllers = makeEmployeeDraftControllers({
+    create: new CreateEmployeeDraftUseCase(employeeDraftRepository),
+    list: new ListEmployeeDraftsUseCase(employeeDraftRepository),
+    get: new GetEmployeeDraftUseCase(employeeDraftRepository),
+    update: new UpdateEmployeeDraftUseCase(employeeDraftRepository),
+    remove: new DeleteEmployeeDraftUseCase(employeeDraftRepository, photoStorage),
+    setPhoto: new SetDraftPhotoUseCase(employeeDraftRepository, photoStorage),
+    removePhoto: new RemoveDraftPhotoUseCase(employeeDraftRepository, photoStorage),
+    finalize: new FinalizeEmployeeDraftUseCase(
+      employeeDraftRepository,
+      userRepository,
+      designationRepository,
+      employeeCodeGenerator,
+      createUser,
+      updateUser,
+      assignCtc,
+      ctcAssignmentRepository,
+      passwordHasher,
+      () => {
+        if (!hqAssigner) throw new Error('The HQ assigner was not bound.');
+        return hqAssigner;
+      },
+      currentMonth,
+      employeeProfileRepository,
+      () => {
+        if (!routeAssigner) throw new Error('The route assigner was not bound.');
+        return routeAssigner;
+      },
+      () => {
+        if (!coverageAssigner) throw new Error('The coverage assigner was not bound.');
+        return coverageAssigner;
+      },
+    ),
+  });
+  const listCtcHistory = new ListCtcHistoryUseCase(ctcAssignmentRepository);
+  const getCtcForMonth = new GetCtcForMonthUseCase(ctcAssignmentRepository);
+  const reapplyCtc = new ReapplyCtcUseCase(payComponentRepository, ctcAssignmentRepository, ctcContext);
+
+  const promotionPlanner = new PromotionPlanner({
+    users: userRepository,
+    roles: roleRepository,
+    designations: designationRepository,
+    payBands: payBandRepository,
+    profiles: employeeProfileRepository,
+    components: payComponentRepository,
+    context: ctcContext,
+    assignments: ctcAssignmentRepository,
+    promotions: promotionRepository,
+    config: configProvider,
+    currentMonth,
+  });
+  const previewPromotion = new PreviewPromotionUseCase(promotionPlanner);
+  const schedulePromotion = new SchedulePromotionUseCase(promotionPlanner, promotionRepository, employeeProfileRepository);
+  const listPromotions = new ListPromotionsUseCase(promotionPlanner, promotionRepository, userRepository);
+  const listAllPromotions = new ListAllPromotionsUseCase(promotionPlanner, promotionRepository);
+  const cancelPromotion = new CancelPromotionUseCase(promotionPlanner, promotionRepository);
+  const applyDuePromotions = new ApplyDuePromotionsUseCase(promotionRepository, employeeProfileRepository, userRepository, payComponentRepository, ctcAssignmentRepository, managerHistoryRepository, currentMonth, ctcContext);
+
+  const getUserSummary = new GetUserSummaryUseCase(userRepository, roleRepository, employeeProfileRepository);
+  const getManagerChain = new GetManagerChainUseCase(userRepository, roleRepository, employeeProfileRepository);
+  const getUserSummaries = new GetUserSummariesUseCase(userRepository, roleRepository, employeeProfileRepository);
+  const listWorkWith = new ListWorkWithUseCase(userRepository, employeeProfileRepository, designationRepository);
+  const namePeople = new NamePeopleUseCase(userRepository, employeeProfileRepository, designationRepository);
+  const getDirectReports = new GetDirectReportsUseCase(userRepository, roleRepository, employeeProfileRepository);
+  const getDownline = new GetDownlineUseCase(userRepository, roleRepository, employeeProfileRepository);
+  const getReportingLine = new GetReportingLineUseCase((id) => getManagerChain.execute(id), (id) => getDownline.execute(id));
+  const reassignManager = new ReassignManagerUseCase(userRepository, employeeProfileRepository, designationRepository, managerHistoryRepository, currentMonth);
+  /** Today in the business timezone (`YYYY-MM-DD`). */
+  const today = async (): Promise<string> => {
+    const { timeZone, dayStart } = await readBusinessDay(configProvider);
+    return businessDate(new Date(), timeZone, dayStart);
+  };
+  const deactivation = new DeactivateEmployeeUseCase(userRepository, employeeProfileRepository, roleRepository, userSessionRepository, reassignManager, today);
+  const resetDeps = { users: userRepository, roles: roleRepository, requests: new MongoPasswordResetRequestAdapter(), hasher: passwordHasher, mailer: new SmtpMailer(), ownerEmail: env.PASSWORD_RESET_OWNER_EMAIL, dailyLimit: env.PASSWORD_RESET_DAILY_LIMIT };
+  const requestAdminPasswordReset = new RequestAdminPasswordResetUseCase(resetDeps);
+  const confirmAdminPasswordReset = new ConfirmAdminPasswordResetUseCase({ ...resetDeps, sessions: userSessionRepository });
+  const listOrgChildren = new ListOrgChildrenUseCase(userRepository, roleRepository, employeeProfileRepository);
+  const isFieldRole = new IsFieldRoleUseCase(userRepository, roleRepository);
+  const isBlocked = new IsBlockedUseCase(userRepository);
+  const getEmploymentDetails = new GetEmploymentDetailsUseCase(employeeProfileRepository, designationRepository);
+  const getPayBandRates = new GetPayBandRatesUseCase(userRepository, employeeProfileRepository, payBandRepository);
+  const getActiveDeviceCount = new GetActiveDeviceCountUseCase(userRepository, userSessionRepository);
+  const pushToken = new PushTokenUseCase(new MongoPushTokenAdapter());
+
+  const seedDefaultRoles = new SeedDefaultRolesUseCase(roleRepository);
+  const seedBootstrapAdminUseCase = new SeedBootstrapAdminUseCase(userRepository, roleRepository, passwordHasher);
+
+  // 3. Controllers
+  const authControllers = {
+    login: makeLoginController(login),
+    refresh: makeRefreshController(refreshSession),
+    logout: makeLogoutController(logout),
+    logoutAll: makeLogoutAllController(logoutAllSessions),
+    me: makeMeController(getUserSummary),
+    changePassword: makeChangePasswordController(changePassword),
+    deleteAccount: makeDeleteAccountController(deleteAccount),
+    deleteAccountPublic: makeDeleteAccountPublicController(deleteAccount),
+    forgotPassword: makeForgotPasswordController(requestAdminPasswordReset),
+    resetAdminPassword: makeResetAdminPasswordController(confirmAdminPasswordReset),
+    pushToken: makePushTokenController(pushToken),
+  };
+  const usersControllers = {
+    list: makeListUsersController(listUsers),
+    detail: makeGetUserDetailController(getUserDetail),
+    reporting: makeGetReportingLineController(getReportingLine),
+    reassignManager: makeReassignManagerController(reassignManager),
+    create: makeCreateUserController(createUser),
+    update: makeUpdateUserController(updateUser),
+    uploadDocument: makeUploadUserDocumentController(uploadUserDocument),
+    removeDocument: makeRemoveUserDocumentController(removeUserDocument),
+    setPhoto: makeSetEmployeePhotoController(new SetEmployeePhotoUseCase(userRepository, employeeProfileRepository, photoStorage)),
+    removePhoto: makeRemoveEmployeePhotoController(new RemoveEmployeePhotoUseCase(employeeProfileRepository, photoStorage)),
+    unblock: makeUnblockUserController(unblockUser),
+    resetPassword: makeResetPasswordController(resetPassword),
+    anonymise: makeAnonymiseUserController(deleteAccount),
+    deactivation: makeDeactivationControllers(deactivation),
+  };
+  const ctcControllers = makeCtcControllers({ preview: previewCtc, assign: assignCtc, history: listCtcHistory, reapply: reapplyCtc });
+  const promotionControllers = makePromotionControllers({ preview: previewPromotion, schedule: schedulePromotion, list: listPromotions, listAll: listAllPromotions, cancel: cancelPromotion, applyDue: applyDuePromotions });
+  const devicesControllers = {
+    listPending: makeListPendingDevicesController(listPendingDevices),
+    listForUser: makeListUserDevicesController(listUserDevices),
+    approve: makeApproveDeviceController(approveDevice),
+    reject: makeRejectDeviceController(rejectDevice),
+    remove: makeRemoveDeviceController(removeDevice),
+    logout: makeLogoutDeviceController(logoutDevice),
+  };
+
+  return {
+    contract: {
+      login: (input) => login.execute(input),
+      refresh: (refreshToken) => refreshSession.execute(refreshToken),
+      logout: (callerUserId, refreshToken) => logout.execute(callerUserId, refreshToken),
+      getUserSummary: (userId) => getUserSummary.execute(userId),
+      getUserSummaries: (userIds) => getUserSummaries.execute(userIds),
+      findUserSummary: async (userId) =>
+        (await userRepository.findById(userId)) ? getUserSummary.execute(userId) : null,
+      getManagerChain: (userId) => getManagerChain.execute(userId),
+      getDirectReports: (managerId) => getDirectReports.execute(managerId),
+      getDownline: (managerId) => getDownline.execute(managerId),
+      isFieldRole: (userId) => isFieldRole.execute(userId),
+      namePeople: (userIds) => namePeople.execute(userIds),
+      getDesignationLevels: async (userIds) => {
+        const [profiles, designations] = await Promise.all([employeeProfileRepository.findByUserIds(userIds), designationRepository.list()]);
+        const levelOf = new Map(designations.map((d) => [d.id, d.level]));
+        return profiles.flatMap((p) => {
+          const level = p.designationId ? levelOf.get(p.designationId) : undefined;
+          return level === undefined ? [] : [{ userId: p.userId, level }];
+        });
+      },
+      isBlocked: (userId) => isBlocked.execute(userId),
+      blockUser: (userId, reason) => blockUser.execute(userId, reason),
+      findUserIdsByName: async (term, options = {}) => {
+        const { items } = await userRepository.list(
+          { page: 1, pageSize: options.limit ?? 200 },
+          { search: term, ...(options.restrictTo && { ids: options.restrictTo }) },
+        );
+        return items.map((u) => u.id);
+      },
+      listActiveFieldUserIds: () => userRepository.listActiveIdsByRole('FIELD'),
+      listPayableFieldUserIds: async (month) => {
+        const [active, leftIds] = await Promise.all([userRepository.listActiveIdsByRole('FIELD'), employeeProfileRepository.findUserIdsLeftOnOrAfter(`${month}-01`)]);
+        const leavers = (await userRepository.findByIds(leftIds)).filter((u) => u.status === 'inactive' && !u.isDemo).map((u) => u.id);
+        return [...new Set([...active, ...leavers])];
+      },
+      listActiveRecipients: async () => {
+        const [users, roles] = await Promise.all([userRepository.listActive(), roleRepository.list()]);
+        const roleName = new Map(roles.map((r) => [r.id, r.name]));
+        const profiles = await employeeProfileRepository.findByUserIds(users.map((u) => u.id));
+        const profileOf = new Map(profiles.map((p) => [p.userId, p]));
+        return users.flatMap((u) => {
+          const role = roleName.get(u.roleId);
+          if (!role) return [];
+          const p = profileOf.get(u.id);
+          return [{ id: u.id, role, hqId: p?.hqId ?? null, zoneId: p?.zoneId ?? null }];
+        });
+      },
+      listFieldEmployees: async (onlyIds) => {
+        const active = await userRepository.listActiveIdsByRole('FIELD');
+        const keep = onlyIds ? new Set(onlyIds) : null;
+        const ids = keep ? active.filter((id) => keep.has(id)) : active;
+        const [users, profiles, designations] = await Promise.all([userRepository.findByIds(ids), employeeProfileRepository.findByUserIds(ids), designationRepository.list()]);
+        const profileOf = new Map(profiles.map((p) => [p.userId, p]));
+        const designationName = new Map(designations.map((d) => [d.id, d.name as string]));
+        const designationLevel = new Map(designations.map((d) => [d.id, d.level]));
+        return users
+          .map((u) => {
+            const p = profileOf.get(u.id);
+            return { id: u.id, employeeCode: u.employeeCode, name: u.name, designation: (p?.designationId && designationName.get(p.designationId)) || null, designationId: p?.designationId ?? null, designationLevel: (p?.designationId && designationLevel.get(p.designationId)) || null, hqId: p?.hqId ?? null, zoneId: p?.zoneId ?? null, managerId: p?.managerId ?? null };
+          })
+          .sort((a, b) => a.name.localeCompare(b.name));
+      },
+      getLastBlockClearedAt: (userId) => complianceBlockRepository.findLastClearedAt(userId),
+      getEmploymentDetails: (userId) => getEmploymentDetails.execute(userId),
+      listPayBands: async () => (await listPayBands.execute()).map(({ id, name }) => ({ id, name })),
+      getPayBandRates: (userId) => getPayBandRates.execute(userId),
+      getCtcForMonth: (userId, month) => getCtcForMonth.execute(userId, month),
+      getActiveDeviceCount: (userId) => getActiveDeviceCount.execute(userId),
+      listPushTokens: (userIds) => pushToken.listForUsers(userIds),
+      clearPushTokens: (tokens) => pushToken.clear(tokens),
+      recordUserTerritory: async (userId, territory) => {
+        await employeeProfileRepository.upsert(userId, territory);
+      },
+    },
+
+    buildRouter: () => {
+      const router = Router();
+      router.use('/auth', buildAuthRouter(authControllers));
+      router.use(buildDevicesRouter(devicesControllers));
+      router.use('/users', buildUserCtcRouter(ctcControllers));
+      router.use('/users', buildUserPromotionsRouter(promotionControllers));
+      router.use('/promotions', buildPromotionsRouter(promotionControllers));
+      router.use('/employee-drafts', buildEmployeeDraftsRouter(employeeDraftControllers));
+      router.use('/work-with', buildWorkWithRouter(listWorkWith));
+      router.use('/users', buildUsersRouter(usersControllers));
+      router.use('/org', buildOrgRouter({ children: makeListOrgChildrenController(listOrgChildren) }));
+      router.use('/pay-components', buildPayComponentsRouter({ list: listPayComponents, create: createPayComponent, update: updatePayComponent }));
+      router.use('/ctc', buildCtcRouter(ctcControllers));
+      router.use('/roles', buildRolesRouter({ list: listRoles, create: createRole, update: updateRole }));
+      router.use(
+        '/designations',
+        buildDesignationsRouter({ list: listDesignations, create: createDesignation }),
+      );
+      router.use(
+        '/pay-bands',
+        buildPayBandsRouter({ list: listPayBands, create: createPayBand, update: updatePayBand }),
+      );
+      return router;
+    },
+
+    seedRoles: () => seedDefaultRoles.execute(),
+    seedPayComponents: () => seedDefaultPayComponents.execute(),
+    applyDuePromotions: () => applyDuePromotions.execute(),
+    bindOffboarding: (port) => deactivation.bindOffboarding(port),
+    restoreAccessRevocations: async () => {
+      const since = new Date(Date.now() - env.JWT_ACCESS_TOKEN_TTL_SECONDS * 1000);
+      const recent = await userRepository.listDeactivatedSince(since);
+      for (const u of recent) revokeAccessTokens(u.id, u.deactivatedAt);
+      return recent.length;
+    },
+    bindHqAssigner: (assign) => {
+      hqAssigner = assign;
+    },
+    bindCoverageAssigner: (assign) => {
+      coverageAssigner = assign;
+    },
+    bindRouteAssigner: (assign) => {
+      routeAssigner = assign;
+    },
+    hasAdmin: () => userRepository.existsAdmin(),
+    seedBootstrapAdmin: (input) => seedBootstrapAdminUseCase.execute(input),
+  };
+}

@@ -1,0 +1,127 @@
+import type { Paise } from '@/shared/money/paise.js';
+import type { CtcLineSnapshot } from './ports.js';
+
+/** One calendar day of the month as payroll saw it when the run was generated: what the day was and how much of it the rules charge (0, 0.5 or 1). */
+export interface PayrollDay {
+  date: string;
+  /** The attendance status: `PRESENT`, `ABSENT`, `LEAVE`, `HOLIDAY`, `WEEKLY_OFF`, `STRIKE`, `NOT_YET`, `BEFORE_JOINING`, `NOT_EMPLOYED` or `UNKNOWN`. */
+  status: string;
+  /** Days of pay charged for this day by the rules: an absent day 1, an unpaid leave day its portion; 0 otherwise. */
+  deductedDays: number;
+  leaveType: string | null;
+}
+
+/**
+ * HR's (or Admin's) change to a draft run, kept for good (decision-log 2026-10-13). `DAY`: the day is charged `setDays` instead of what the rules
+ * gave (`ruleDays`), e.g. an absent day not charged; the latest change to a date is the one that counts. `AMOUNT`: a signed amount added to
+ * (or taken off) the net. `amountPaise` is the effect on the net when it was made.
+ */
+export interface PayrollAdjustment {
+  id: string;
+  kind: 'DAY' | 'AMOUNT';
+  date: string | null;
+  ruleDays: number | null;
+  setDays: number | null;
+  amountPaise: number;
+  /** AMOUNT: what the line is called on the slip (Bonus, Penalty…); `null`/absent on entries from before 2026-11-02, shown as "Adjustment". */
+  label?: string | null;
+  /** AMOUNT cut by days: how many days of pay (halves) it took off; the amount was worked out from it. */
+  days?: number | null;
+  /** DAY: what the day was made — one of `DAY_OUTCOMES`; absent on older entries (only `setDays`). */
+  outcome?: DayOutcome | null;
+  reason: string;
+  by: string;
+  byRole: string;
+  at: Date;
+}
+
+/** What HR can make a day at payroll, and the days of pay each charges. */
+export const DAY_OUTCOMES = ['PRESENT', 'PAID_LEAVE', 'UNPAID_LEAVE', 'HALF_DAY', 'ABSENT'] as const;
+export type DayOutcome = (typeof DAY_OUTCOMES)[number];
+export const OUTCOME_CHARGE: Record<DayOutcome, number> = { PRESENT: 0, PAID_LEAVE: 0, UNPAID_LEAVE: 1, HALF_DAY: 0.5, ABSENT: 1 };
+
+export const PAYROLL_STATUSES = ['DRAFT', 'FINALIZED'] as const;
+export type PayrollStatus = (typeof PAYROLL_STATUSES)[number];
+
+/**
+ * One FIELD employee's pay for one month. `DRAFT` until an Accountant (or Admin) finalizes it; from then on every
+ * figure is frozen, whatever later happens to the expenses or leave behind it.
+ */
+export interface PayrollRun {
+  id: string;
+  userId: string;
+  /** `YYYY-MM`. */
+  month: string;
+  /**
+   * The employee's monthly gross when generated: the CTC less the employer's EPF/ESI, ÷ 12 — a snapshot, so a later CTC
+   * revision never rewrites it. (Runs from before CTC existed hold the old Pay Band salary here and no CTC fields.)
+   */
+  baseSalaryPaise: Paise;
+  /** The days a day's pay is `base ÷` (the month's length, 28–31; decision-log 2026-11-02). Runs from before that are 30. */
+  payDays: number;
+  /** The annual CTC and the revision's first month it was worked out from; `null` on runs from before CTC existed. */
+  ctcAnnualPaise: Paise | null;
+  ctcEffectiveFrom: string | null;
+  /** The breakdown at generation (annual amounts, employer contributions included); empty on older runs. */
+  ctcLines: CtcLineSnapshot[];
+  /**
+   * TA + DA marked paid during the month. Only on runs finalized before 2026-10-06: TA/DA and reimbursements are paid in their own
+   * payout on the 15th now (decision-log 2026-10-06), so a new run holds 0 here.
+   */
+  totalTaDaPaise: Paise;
+  /** Manual expenses paid during the month; as above, 0 on a new run. */
+  reimbursementPaise: Paise;
+  /** Approved unpaid leave days in the month, halves allowed — what the deduction was worked out from. */
+  unpaidLeaveDays: number;
+  leaveDeductionPaise: Paise;
+  /**
+   * Days charged as absent: working days with no report, leave or strike (and strike days too while `STRIKE_DEDUCTS_SALARY` is on), only while
+   * `ABSENT_DEDUCTS_SALARY` is on, and together with the unpaid leave never more than `payDays`. `0` on runs from before 2026-10-07.
+   */
+  absentDays: number;
+  /** `absent days × base ÷ payDays`, rounded half up once and frozen; `0` on older runs. */
+  absentDeductionPaise: Paise;
+  /**
+   * The employee's own EPF, ESI and professional tax for the month, one line each, from the CTC's deduction lines (a month at a time,
+   * frozen with the run). Taken on the full contract salary, not reduced by leave days. Empty on runs from before 2026-10-14.
+   */
+  deductionLines: Array<{ code: string; name: string; amountPaise: Paise }>;
+  /** The sum of `deductionLines`; `0` on older runs. */
+  statutoryDeductionPaise: Paise;
+  /** What was added (or taken) to bring the net the rules gave to a whole rupee; signed, `0` on older runs. */
+  roundingPaise: number;
+  /** `base − statutory deductions − leave deduction − absent deduction + rounding + adjustments` (older runs also add TA/DA and reimbursement). */
+  netPayablePaise: Paise;
+  /** The month day by day as payroll saw it; empty on runs from before 2026-10-13. */
+  days: PayrollDay[];
+  /** What HR changed on the draft, oldest first. */
+  adjustments: PayrollAdjustment[];
+  /** The sum of the adjustments' effect on the net (signed). */
+  adjustmentPaise: number;
+  /** The net before any adjustment: what the rules gave. */
+  originalNetPayablePaise: Paise;
+  /** The employee's ESI number when generated (a snapshot, printed on the salary slip); null if none was set. */
+  esiNumber: string | null;
+  /** The employee's EPF number when generated (a snapshot for the salary slip); null if none was set. */
+  epfNumber: string | null;
+  /** Slip snapshot: designation, bank and joining date (`YYYY-MM-DD`) when generated; null if none was set. */
+  designationName: string | null;
+  bankName: string | null;
+  bankAccountNumber: string | null;
+  dateOfJoining: string | null;
+  /** The joining date falls in this month; the full base salary is paid (no proration) and the Accountant is told. */
+  joinedInMonth: boolean;
+  /** The last working day falls in this month (2026-10-22): the full base salary is paid, as for joining, and the Accountant is told. */
+  leftInMonth: boolean;
+  status: PayrollStatus;
+  generatedBy: string;
+  generatedAt: Date;
+  finalizedAt: Date | null;
+  finalizedBy: string | null;
+  /** The Accountant marked the salary paid (the run is final from then on, and stays so). */
+  paidAt: Date | null;
+  paidBy: string | null;
+  paymentReference: string | null;
+}
+
+export type PayrollDraft = Omit<PayrollRun, 'id' | 'status' | 'finalizedAt' | 'finalizedBy' | 'paidAt' | 'paidBy' | 'paymentReference'>;

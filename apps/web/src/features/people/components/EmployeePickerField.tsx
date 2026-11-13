@@ -1,0 +1,117 @@
+'use client';
+
+import { useState } from 'react';
+import { Button } from '@/components/ui/Button';
+import { FormField } from '@/components/ui/FormField';
+import { ManagerPickerDialog } from './ManagerPickerDialog';
+import { useDesignations } from '../hooks/useMasterData';
+import { useSession } from '@/lib/auth/SessionProvider';
+import { useFieldDirectory, useUser } from '../hooks/useUsers';
+
+/** A person's name and code from their id, or a dash while it loads or for someone not found. */
+export function EmployeeName({ userId }: { userId: string | null | undefined }) {
+  const { user: me } = useSession();
+  const viaDirectory = me?.role === 'ACCOUNTANT';
+  const user = useUser(viaDirectory ? null : userId);
+  const directory = useFieldDirectory(viaDirectory);
+  if (!userId) return <span className="text-text-subtle">—</span>;
+  const person = viaDirectory ? directory.data?.find((p) => p.id === userId) : user.data;
+  return <>{person ? `${person.name} (${person.employeeCode})` : '—'}</>;
+}
+
+/**
+ * A person as the Work With lines print them: `Asha Rao (ASM)`. Pass `label` when the server already named them (a plan read's
+ * `workWithPeople`) and nothing is fetched; otherwise the name shows until the designation loads, or if they have none.
+ */
+export function WorkWithName({ userId, label }: { userId: string; label?: string | undefined }) {
+  const user = useUser(label ? null : userId);
+  const designations = useDesignations();
+  if (label) return <>{label}</>;
+  if (!user.data) return <>—</>;
+  const designationId = user.data.profile?.designationId;
+  const designation = designations.data?.find((d) => d.id === designationId)?.name;
+  return <>{designation ? `${user.data.name} (${designation})` : user.data.name}</>;
+}
+
+/** Choose an active field employee, or clear the choice. The value is a user id. */
+export function EmployeePickerField({
+  id,
+  label,
+  title,
+  value,
+  onChange,
+  error,
+  disabled = false,
+  hint,
+  selfId,
+}: {
+  id: string;
+  label: string;
+  title: string;
+  value: string;
+  onChange: (userId: string) => void;
+  error?: string | undefined;
+  disabled?: boolean;
+  hint?: string;
+  /** Not offered in the list (the employee themselves, when choosing their own manager). */
+  selfId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <FormField label={label} htmlFor={id} error={error} {...(hint ? { hint } : {})}>
+      <div className="flex items-center gap-2">
+        <span id={id} className="min-w-0 flex-1 truncate text-sm">
+          {value ? <EmployeeName userId={value} /> : <span className="text-text-subtle">Nobody assigned</span>}
+        </span>
+        <Button variant="secondary" size="sm" disabled={disabled} onClick={() => setOpen(true)}>
+          {value ? 'Change' : 'Choose'}
+        </Button>
+        {value ? (
+          <Button variant="ghost" size="sm" disabled={disabled} onClick={() => onChange('')} aria-label={`Remove the ${label}`}>
+            Remove
+          </Button>
+        ) : null}
+      </div>
+      {open ? (
+        <ManagerPickerDialog
+          {...(selfId ? { selfId } : {})}
+          title={title}
+          label={label}
+          onClose={() => setOpen(false)}
+          onPick={(u) => {
+            onChange(u.id);
+            setOpen(false);
+          }}
+        />
+      ) : null}
+    </FormField>
+  );
+}
+
+/** A list filter for an MR: "Any MR", or the chosen one with a way to clear it. */
+export function EmployeeFilter({ value, onChange, allLabel }: { value: string; onChange: (userId: string) => void; allLabel: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex items-center gap-1">
+      <Button variant="secondary" onClick={() => setOpen(true)} aria-label={allLabel}>
+        <span className="max-w-48 truncate">{value ? <EmployeeName userId={value} /> : allLabel}</span>
+      </Button>
+      {value ? (
+        <Button variant="ghost" size="sm" onClick={() => onChange('')} aria-label={`Clear the ${allLabel} filter`}>
+          Clear
+        </Button>
+      ) : null}
+      {open ? (
+        <ManagerPickerDialog
+          title="Filter by employee"
+          label="Employee"
+          onClose={() => setOpen(false)}
+          onPick={(u) => {
+            onChange(u.id);
+            setOpen(false);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}

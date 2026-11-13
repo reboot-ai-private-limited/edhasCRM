@@ -1,0 +1,63 @@
+import { z } from 'zod';
+import { PLATFORMS } from '../domain/userSession.entity.js';
+import { passwordSchema } from './password.schema.js';
+
+export const loginBodySchema = z.object({
+  employeeCode: z.string().min(1),
+  password: passwordSchema,
+  deviceId: z.string().min(1),
+  deviceName: z.string().min(1),
+  deviceModel: z.string().min(1),
+  platform: z.enum(PLATFORMS),
+});
+
+// Optional: a browser sends the token as an httpOnly cookie instead (see refreshCookie.ts).
+export const refreshBodySchema = z.object({
+  refreshToken: z.string().min(1).optional(),
+});
+
+export const logoutBodySchema = z.object({
+  refreshToken: z.string().min(1).optional(),
+});
+
+export const deleteAccountBodySchema = z.object({
+  password: passwordSchema,
+});
+
+// No complexity rules: this only checks the password they already have.
+export const deleteAccountPublicBodySchema = z.object({
+  employeeCode: z.string().trim().min(1).max(50),
+  password: z.string().min(1).max(200),
+});
+
+// The current password is only checked, so it carries no complexity rule; the new one does.
+export const changePasswordBodySchema = z.object({
+  currentPassword: z.string().min(1).max(200),
+  newPassword: passwordSchema,
+  // The phone sends it in the body; a browser sends the httpOnly cookie instead (see refreshCookie.ts).
+  refreshToken: z.string().min(1).optional(),
+});
+
+export const logoutAllBodySchema = z.object({
+  userId: z.string().min(1),
+});
+
+export const pushTokenBodySchema = z.object({
+  deviceId: z.string().min(1),
+  token: z.string().trim().min(20).max(4096),
+});
+
+export const pushTokenClearBodySchema = z.object({
+  deviceId: z.string().min(1),
+});
+
+/** Both steps of an Admin's forgotten-password reset. The first answers the same whoever asks. */
+export const forgotPasswordBodySchema = z.object({
+  employeeCode: z.string().trim().min(1).max(50),
+});
+
+export const resetAdminPasswordBodySchema = z.object({
+  employeeCode: z.string().trim().min(1).max(50),
+  otp: z.string().trim().regex(/^\d{6}$/, 'The code is 6 digits.'),
+  newPassword: passwordSchema,
+});

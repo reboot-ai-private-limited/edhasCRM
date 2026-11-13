@@ -1,0 +1,139 @@
+import { parseWeeklyOffSchedule, type RoleName } from '@edhas/contracts';
+import { AppError } from '@/shared/errors/AppError.js';
+import { findConfigDefinition, validateConfigValue } from '../../domain/configDefinitions.js';
+import type { SystemConfigEntry } from '../../domain/systemConfig.entity.js';
+import type { SystemConfigRepositoryPort } from '../../domain/systemConfig.repository.port.js';
+
+/** The two plan times that must stay in order: a rejected plan cannot be resubmitted before its own deadline has passed. */
+const DEADLINE_KEY = 'DAILY_PLAN_SUBMIT_CUTOFF_TIME';
+const LATEST_KEY = 'DAILY_PLAN_RESUBMIT_LATEST_TIME';
+/** The two route-distance thresholds: Out-station must start beyond Ex-station. */
+const EX_KEY = 'EX_STATION_MIN_KM';
+const OUT_KEY = 'OUT_STATION_MIN_KM';
+const WEEKLY_OFF_KEY = 'WEEKLY_OFF_SCHEDULE';
+/** Salary is run on the salary day on reports that are settled by then, so the daily-report deadline day cannot come after it. */
+const DCR_CUTOFF_KEY = 'DCR_SUBMIT_CUTOFF_DAY';
+const SALARY_DAY_KEY = 'SALARY_RUN_DAY';
+
+/**
+ * Changes one setting. The value is checked against the setting's own definition (type, limits) and stored in the form the readers
+ * expect, so what is saved is always something the system can read back: `banana` for a time of day is a `400` here and not a fault on
+ * every later read. The one rule that spans two settings (the latest resubmit time must be after the plan deadline) is checked too.
+ *
+ * The route already gates this behind `requireRole('ADMIN')`; this re-checks so the guarantee
+ * still holds if the use case is ever invoked from somewhere other than the HTTP layer — same
+ * defense-in-depth as `unblockUser.usecase.ts`.
+ */
+export class UpdateConfigValueUseCase {
+  /** `today` is a UTC date: the config module has no business timezone, and a few hours' slack on a start date does no harm. */
+  constructor(
+    private readonly repository: SystemConfigRepositoryPort,
+    private readonly today: () => string = () => new Date().toISOString().slice(0, 10),
+  ) {}
+
+  async execute(
+    actingUserId: string,
+    actingRole: RoleName,
+    key: string,
+    value: string,
+  ): Promise<SystemConfigEntry> {
+    if (actingRole !== 'ADMIN') throw AppError.forbidden();
+
+    const definition = findConfigDefinition(key);
+    // A key with no definition is not one an Admin may change, whatever the database holds.
+    if (!definition) throw AppError.notFound(`Unknown config key: ${key}`);
+    if (definition.managedBy) throw AppError.badRequest(definition.managedBy, { field: 'key', key });
+    const checked = validateConfigValue(definition, value);
+    if (!checked.ok) throw AppError.badRequest(checked.message, { field: 'value', key });
+    await this.assertPlanTimesInOrder(key, checked.value);
+    await this.assertStationKmInOrder(key, checked.value);
+    await this.assertReportCutoffNotAfterSalaryDay(key, checked.value);
+    await this.assertWeeklyOffHistoryKept(key, checked.value);
+
+    const updated = await this.repository.updateValue(key, checked.value, actingUserId);
+    if (!updated) {
+      // Unlike `GetConfigValueUseCase`'s `CONFIG_KEY_MISSING` (a key `seedDefaultConfig` should
+      // have created is a violated invariant), an Admin naming an unknown key here is a caller
+      // error, not ours — hence `notFound`, not `internal`.
+      throw AppError.notFound(`Unknown config key: ${key}`);
+    }
+    return updated;
+  }
+
+  /**
+   * Weekly off sets that have already started are history: attendance, payroll and plans of those dates were read with them. A save
+   * keeps every started set as it was, and only a set starting today or later may be added, changed or removed.
+   */
+  private async assertWeeklyOffHistoryKept(key: string, value: string): Promise<void> {
+    if (key !== WEEKLY_OFF_KEY) return;
+    const stored = (await this.repository.findByKey(key))?.value;
+    const old = stored ? parseWeeklyOffSchedule(stored) : null;
+    // An unreadable stored value is flagged on its own and must not block fixing it.
+    if (!old?.ok) return;
+    const next = parseWeeklyOffSchedule(value);
+    if (!next.ok) return;
+    const today = this.today();
+    const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    for (const v of old.schedule) {
+      if (v.effectiveFrom < today && !next.schedule.some((n) => same(n, v))) {
+        throw AppError.badRequest(`The days off that started on ${v.effectiveFrom} have already been used and can't be changed. Add a new set that starts today or later.`, { field: 'value', key });
+      }
+    }
+    for (const n of next.schedule) {
+      if (n.effectiveFrom < today && !old.schedule.some((v) => same(v, n))) {
+        throw AppError.badRequest(`A new set of days off can't start in the past (${n.effectiveFrom}). Start it today or later.`, { field: 'value', key });
+      }
+    }
+  }
+
+  private async assertReportCutoffNotAfterSalaryDay(key: string, value: string): Promise<void> {
+    if (key !== DCR_CUTOFF_KEY && key !== SALARY_DAY_KEY) return;
+    const other = (await this.repository.findByKey(key === DCR_CUTOFF_KEY ? SALARY_DAY_KEY : DCR_CUTOFF_KEY))?.value;
+    if (!other || !/^\d+$/.test(other)) return;
+    const cutoff = Number(key === DCR_CUTOFF_KEY ? value : other);
+    const salary = Number(key === SALARY_DAY_KEY ? value : other);
+    if (cutoff !== 0 && cutoff > salary) {
+      throw AppError.badRequest(
+        key === DCR_CUTOFF_KEY
+          ? `The daily-report deadline day (${cutoff}) can't be later than the salary day (${salary}): salary needs the month's reports settled first.`
+          : `The salary day (${salary}) can't be earlier than the daily-report deadline day (${cutoff}).`,
+        { field: 'value', key },
+      );
+    }
+  }
+
+  private async assertStationKmInOrder(key: string, value: string): Promise<void> {
+    if (key !== EX_KEY && key !== OUT_KEY) return;
+    const other = (await this.repository.findByKey(key === EX_KEY ? OUT_KEY : EX_KEY))?.value;
+    // As with the plan times, an unreadable other value is flagged on its own and must not block fixing this one.
+    if (!other || !/^\d+$/.test(other)) return;
+    const ex = Number(key === EX_KEY ? value : other);
+    const out = Number(key === OUT_KEY ? value : other);
+    if (out <= ex) {
+      throw AppError.badRequest(
+        key === OUT_KEY
+          ? `Out-station (${out} km) must be more than Ex-station (${ex} km).`
+          : `Ex-station (${ex} km) must be less than Out-station (${out} km).`,
+        { field: 'value', key },
+      );
+    }
+  }
+
+  private async assertPlanTimesInOrder(key: string, value: string): Promise<void> {
+    if (key !== DEADLINE_KEY && key !== LATEST_KEY) return;
+    const otherKey = key === DEADLINE_KEY ? LATEST_KEY : DEADLINE_KEY;
+    const other = (await this.repository.findByKey(otherKey))?.value;
+    // The other one may itself be a bad older value; that is flagged on its own and must not block fixing this one.
+    if (!other || !/^([01]\d|2[0-3]):[0-5]\d$/.test(other)) return;
+    const deadline = key === DEADLINE_KEY ? value : other;
+    const latest = key === LATEST_KEY ? value : other;
+    if (latest <= deadline) {
+      throw AppError.badRequest(
+        key === LATEST_KEY
+          ? `The latest resubmit time (${latest}) must be after the plan deadline (${deadline}).`
+          : `The plan deadline (${deadline}) must be before the latest resubmit time (${latest}).`,
+        { field: 'value', key },
+      );
+    }
+  }
+}

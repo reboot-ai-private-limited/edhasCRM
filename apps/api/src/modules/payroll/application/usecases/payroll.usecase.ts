@@ -1,0 +1,235 @@
+import { appEvents } from '@/shared/events/appEvents.js';
+import { logger } from '@/shared/logging/logger.js';
+import { assertTimeZone, businessDate } from '@/shared/time/businessTime.js';
+import { readConfig, readDayStart, type ConfigReader } from '@/shared/config/readConfig.js';
+import { assertFinancialYearOpen } from '@/shared/time/financialYearClose.js';
+import type { PayrollFilter, PayrollRunRepositoryPort } from '../../domain/payroll.repository.port.js';
+import { PAYROLL_CODES, PayrollRefusal, type PayrollCode } from '../../domain/payrollRefusal.js';
+import type { PayrollDay, PayrollRun } from '../../domain/payrollRun.entity.js';
+import type { AttendancePort, HrPort, IdentityPort } from '../../domain/ports.js';
+import { absentDeductionPaise, adjustmentEffects, chargeableAbsentDays, deductionLinesOf, leaveDeductionPaise, monthlyGrossPaise, payDaysOf, netPayablePaise, roundNetToRupee, statutoryTakenPaise } from '../payrollCalc.js';
+
+export interface Actor {
+  id: string;
+  role: string;
+}
+
+const LIMIT = 1000;
+
+export type GenerateOutcome =
+  | { userId: string; outcome: 'created' | 'updated'; run: PayrollRun }
+  | { userId: string; outcome: 'skipped'; reason: PayrollCode; message: string };
+
+/** Payroll's clock: the business timezone from Config, `now` injectable for tests. */
+export class PayrollClock {
+  constructor(
+    private readonly config: ConfigReader,
+    readonly now: () => Date = () => new Date(),
+  ) {}
+  timeZone(): Promise<string> {
+    return readConfig(this.config, 'BUSINESS_TIMEZONE', (v) => {
+      assertTimeZone(v);
+      return v;
+    });
+  }
+  async today(): Promise<string> {
+    return businessDate(this.now(), await this.timeZone(), await readDayStart(this.config));
+  }
+  async dateOf(instant: Date): Promise<string> {
+    return businessDate(instant, await this.timeZone(), await readDayStart(this.config));
+  }
+  /** A date of record (the joining date) read in the business timezone, not shifted by the day start. */
+  async calendarDateOf(instant: Date): Promise<string> {
+    return businessDate(instant, await this.timeZone());
+  }
+  /** A month inside a closed financial year can no longer be generated or finalized. */
+  assertMonthOpen(month: string): Promise<void> {
+    return assertFinancialYearOpen(this.config, `${month}-01`, `Payroll for ${month}`);
+  }
+}
+
+/**
+ * The Accountant's (or Admin's) salary sheet (LLD payroll.md, HLD 7). For each employee, independently: the CTC in force for
+ * the month (its monthly gross, snapshotted), the month's approved unpaid leave, the deduction and the net (`base − deduction`; TA/DA
+ * and reimbursements are paid separately, on the 15th) — written as a `DRAFT`, overwriting an earlier draft, never a finalized run. One employee's
+ * problem (no CTC, already finalized, a fault) is reported for them and never fails the rest.
+ */
+export class GeneratePayrollUseCase {
+  constructor(
+    private readonly runs: PayrollRunRepositoryPort,
+    private readonly identity: IdentityPort,
+    private readonly hr: HrPort,
+    private readonly attendance: AttendancePort,
+    private readonly clock: PayrollClock,
+  ) {}
+
+  async execute(actor: Actor, input: { month: string; userIds?: string[] | undefined }): Promise<GenerateOutcome[]> {
+    // Only a month that is over: generating the unfinished one would freeze a sheet that misses the rest of it.
+    if ((await this.clock.today()).slice(0, 7) <= input.month) throw new PayrollRefusal(PAYROLL_CODES.monthNotEnded, `${input.month} has not ended yet. Payroll can be generated once the month is over.`);
+
+    await this.clock.assertMonthOpen(input.month);
+    const single = input.userIds?.length === 1;
+    const ids = input.userIds ? [...new Set(input.userIds)] : await this.identity.listPayableFieldUserIds(input.month);
+    const results: GenerateOutcome[] = [];
+    for (const userId of ids) {
+      try {
+        results.push(await this.one(actor, input.month, userId));
+      } catch (err) {
+        if (!(err instanceof PayrollRefusal)) {
+          logger.error({ err, userId, month: input.month }, 'payroll generation failed for one employee');
+          results.push({ userId, outcome: 'skipped', reason: PAYROLL_CODES.error, message: 'Something went wrong computing this employee. Try again.' });
+          continue;
+        }
+        // Asked for one employee by name, a refusal is the answer; in a batch it is that employee's line.
+        if (single && err.code === PAYROLL_CODES.alreadyFinalized) throw err;
+        results.push({ userId, outcome: 'skipped', reason: err.code, message: err.message });
+      }
+    }
+    return results;
+  }
+
+  private async dayRows(userId: string, month: string): Promise<PayrollDay[]> {
+    const [attendance, leave] = await Promise.all([this.attendance.getMonth(userId, month), this.hr.listLeaveDays(userId, `${month}-01`, `${month}-31`)]);
+    return buildDayRows(attendance, leave);
+  }
+
+  private async one(actor: Actor, month: string, userId: string): Promise<GenerateOutcome> {
+    const user = await this.identity.findUserSummary(userId);
+    if (!user) throw new PayrollRefusal(PAYROLL_CODES.userNotFound, 'No such employee.');
+    if (user.role !== 'FIELD') throw new PayrollRefusal(PAYROLL_CODES.notFieldEmployee, 'Payroll covers field employees only.');
+    const employment = await this.identity.getEmploymentDetails(userId);
+    // A leaver is still paid up to the month of their last working day (decision-log 2026-10-22); later months are not theirs.
+    const lastWorkingDay = employment?.lastWorkingDay ?? null;
+    if (user.status !== 'active' && !(user.status === 'inactive' && lastWorkingDay && lastWorkingDay >= `${month}-01`)) {
+      throw new PayrollRefusal(
+        PAYROLL_CODES.notFieldEmployee,
+        user.status === 'inactive' && lastWorkingDay ? `${user.name} left on ${lastWorkingDay}; salary can be run for months up to then.` : 'Payroll covers active field employees only.',
+      );
+    }
+    const ctc = await this.identity.getCtcForMonth(userId, month);
+    if (!ctc) throw new PayrollRefusal(PAYROLL_CODES.noCtc, `${user.name} has no CTC in force for ${month}, so there is no salary to pay.`);
+
+    const baseSalaryPaise = monthlyGrossPaise(ctc.lines);
+    // A day is priced by the month's own length (decision-log 2026-11-02), frozen on the run.
+    const payDays = payDaysOf(month);
+    const unpaidLeaveDays = await this.hr.getUnpaidLeaveDays(userId, month);
+    const deduction = leaveDeductionPaise(unpaidLeaveDays, baseSalaryPaise, payDays);
+    // Working days with no report, leave or strike cost a day's pay too (decision-log 2026-10-06, K20); never more than a month with the leave.
+    const absentDays = chargeableAbsentDays(unpaidLeaveDays, (await this.attendance.countDeductibleDays(userId, month)).deductibleDays, payDays);
+    const absentDeduction = absentDeductionPaise(absentDays, baseSalaryPaise, payDays);
+    // The month day by day, as payroll saw it: what each day was and how much of it the rules charge. HR's changes to this draft (if it has any)
+    // are kept through a regeneration and re-applied to the new figures.
+    const days = await this.dayRows(userId, month);
+    const adjustments = (await this.runs.findByUserMonth(userId, month))?.adjustments ?? [];
+    // EPF, ESI and professional tax, on the full contract salary: leave and absent days do not reduce them. The net is brought to a whole rupee.
+    const deductionLines = deductionLinesOf(ctc.lines);
+    const statutory = statutoryTakenPaise(deductionLines.reduce((n, l) => n + l.amountPaise, 0), baseSalaryPaise, deduction, absentDeduction);
+    const unrounded = netPayablePaise({ baseSalaryPaise, totalTaDaPaise: 0, reimbursementPaise: 0, leaveDeductionPaise: deduction, absentDeductionPaise: absentDeduction, statutoryDeductionPaise: statutory });
+    const { netPaise: originalNet, roundingPaise } = roundNetToRupee(unrounded);
+    const adjustmentPaise = adjustmentEffects(baseSalaryPaise, days, adjustments, payDays).totalPaise;
+    const joinedInMonth = employment?.dateOfJoining ? (await this.clock.calendarDateOf(employment.dateOfJoining)).startsWith(`${month}-`) : false;
+    // Like joining: the full base salary is paid for the leaving month (the days after are not employed, never absent), and it is flagged.
+    const leftInMonth = lastWorkingDay ? lastWorkingDay.startsWith(`${month}-`) : false;
+
+    const saved = await this.runs.saveDraft({
+      userId,
+      month,
+      baseSalaryPaise,
+      payDays,
+      ctcAnnualPaise: ctc.ctcAnnualPaise,
+      ctcEffectiveFrom: ctc.effectiveFrom,
+      ctcLines: ctc.lines,
+      // TA/DA and reimbursements are not part of salary: they are paid in the expense payout on the 15th.
+      totalTaDaPaise: 0,
+      reimbursementPaise: 0,
+      esiNumber: employment?.esiNumber ?? null,
+      epfNumber: employment?.epfNumber ?? null,
+      designationName: employment?.designationName ?? null,
+      bankName: employment?.bankName ?? null,
+      bankAccountNumber: employment?.bankAccountNumber ?? null,
+      dateOfJoining: employment?.dateOfJoining ? await this.clock.calendarDateOf(employment.dateOfJoining) : null,
+      deductionLines,
+      statutoryDeductionPaise: statutory,
+      roundingPaise,
+      unpaidLeaveDays,
+      leaveDeductionPaise: deduction,
+      absentDays,
+      absentDeductionPaise: absentDeduction,
+      netPayablePaise: originalNet + adjustmentPaise,
+      days,
+      adjustments,
+      adjustmentPaise,
+      originalNetPayablePaise: originalNet,
+      joinedInMonth,
+      leftInMonth,
+      generatedBy: actor.id,
+      generatedAt: this.clock.now(),
+    });
+    if (saved.outcome === 'finalized') throw new PayrollRefusal(PAYROLL_CODES.alreadyFinalized, `${user.name}'s payroll for ${month} is already finalized and cannot be regenerated.`);
+    return { userId, outcome: saved.outcome, run: saved.run };
+  }
+}
+
+/** The days of a month with what each was and what the rules charge for it (decision-log 2026-10-13). */
+export function buildDayRows(
+  attendance: { days: Array<{ date: string; status: string }>; absentDeducts: boolean; strikeDeducts: boolean },
+  leave: Array<{ date: string; portion: number; paid: boolean; leaveType: string | null; status: string }>,
+): PayrollDay[] {
+  const leaveOn = new Map(leave.map((l) => [l.date, l]));
+  return attendance.days.map((d) => {
+    const l = leaveOn.get(d.date);
+    let deductedDays = 0;
+    // Only a fully approved unpaid leave is deducted by payroll; a manager-approved one is not yet.
+    if (d.status === 'LEAVE') deductedDays = l && !l.paid && l.status === 'APPROVED' ? l.portion : 0;
+    else if (d.status === 'ABSENT') deductedDays = attendance.absentDeducts ? 1 : 0;
+    else if (d.status === 'STRIKE') deductedDays = attendance.strikeDeducts ? 1 : 0;
+    return { date: d.date, status: d.status, deductedDays, leaveType: d.status === 'LEAVE' ? (l?.leaveType ?? null) : null };
+  });
+}
+
+/** `DRAFT` → `FINALIZED`, once: one conditional update, so of two racing finalizes exactly one wins. */
+export class FinalizePayrollUseCase {
+  constructor(
+    private readonly runs: PayrollRunRepositoryPort,
+    private readonly clock: PayrollClock,
+    /** Whether every day of the month is past its daily-report deadline; finalizing locks the month's reports, so it waits for it. */
+    private readonly dcrWindowClosed: (month: string) => Promise<boolean> = async () => true,
+  ) {}
+
+  async execute(id: string, by: string): Promise<PayrollRun> {
+    const run = await this.runs.findById(id);
+    if (!run) throw new PayrollRefusal(PAYROLL_CODES.runNotFound, 'No such payroll run.');
+    await this.clock.assertMonthOpen(run.month);
+    if (!(await this.dcrWindowClosed(run.month))) {
+      throw new PayrollRefusal(PAYROLL_CODES.dcrWindowOpen, `Daily reports for ${run.month} can still be submitted on time, and finalizing locks them. Finalize after the deadline.`);
+    }
+    if (!(await this.runs.finalize(id, this.clock.now(), by))) throw new PayrollRefusal(PAYROLL_CODES.alreadyFinalized, 'This payroll run is already finalized.');
+    appEvents.emit('period.settled', { userId: run.userId, month: run.month, source: 'PAYROLL' });
+    return (await this.runs.findById(id)) ?? run;
+  }
+}
+
+export class GetPayrollRunUseCase {
+  constructor(private readonly runs: PayrollRunRepositoryPort) {}
+  async execute(id: string): Promise<PayrollRun> {
+    const run = await this.runs.findById(id);
+    if (!run) throw new PayrollRefusal(PAYROLL_CODES.runNotFound, 'No such payroll run.');
+    return run;
+  }
+}
+
+export class ListPayrollRunsUseCase {
+  constructor(private readonly runs: PayrollRunRepositoryPort) {}
+  execute(filter: PayrollFilter): Promise<PayrollRun[]> {
+    return this.runs.list(filter, LIMIT);
+  }
+}
+
+
+/** The employee's own finalized slips: a draft is the Accountant's working sheet, not yet the employee's pay. */
+export class ListMyPayslipsUseCase {
+  constructor(private readonly runs: PayrollRunRepositoryPort) {}
+  execute(userId: string, range: { month?: string | undefined; fromMonth?: string | undefined; toMonth?: string | undefined }): Promise<PayrollRun[]> {
+    return this.runs.list({ ...range, userId, status: 'FINALIZED' }, LIMIT);
+  }
+}
