@@ -1,7 +1,7 @@
 # Deploy to the shared demo VM (pm2 + nginx)
 
 Web: https://demo.edhas.co.in (port 3050) · API: https://api.edhas.co.in (port 4050).
-Same VM as greynote / vastu / darjeeling. Not Docker; see `manual_deploy.md` for the Docker route and for the seed/migration scripts.
+Shares a VM with other apps. Not Docker; see `manual_deploy.md` for the Docker route and for the seed/migration scripts.
 
 **Firebase is off by design.** Leave `FIREBASE_SERVICE_ACCOUNT_JSON` out of `.env.prod` entirely (an empty line crashes boot).
 The API then sends no push; Inbox still works.

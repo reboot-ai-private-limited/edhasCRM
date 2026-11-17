@@ -1,5 +1,5 @@
 // pm2 process file for the shared demo VM (see docs/deploy-pm2.md).
-// Ports: api 4050, web 3050 (greynote 3010/4010, vastu 3020/4020, darjeeling 3030/4030+3040). Both bind to localhost; nginx fronts them.
+// Ports: api 4050, web 3050 (other apps on the VM use 3010-3040 / 4010-4040). Both bind to localhost; nginx fronts them.
 const root = process.env.EDHAS_ROOT || '/opt/edhas';
 
 module.exports = {
