@@ -1,5 +1,5 @@
 import { forwardRef, useState } from 'react';
-import { Pressable, StyleSheet, TextInput, type TextInputProps, View } from 'react-native';
+import { Pressable, StyleSheet, TextInput, type TextInputInstance, type TextInputProps, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -18,7 +18,7 @@ export type TextFieldProps = TextInputProps & {
  * Remarks, amounts, …) — built once here so ~40 upcoming screens share the same look and the
  * same error-state handling instead of each re-implementing it.
  */
-export const TextField = forwardRef<TextInput, TextFieldProps>(function TextField(
+export const TextField = forwardRef<TextInputInstance, TextFieldProps>(function TextField(
   { label, error, secure, style, ...inputProps },
   ref,
 ) {

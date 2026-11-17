@@ -1,7 +1,7 @@
 import * as Device from 'expo-device';
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { Alert, Platform, ScrollView, StyleSheet } from 'react-native';
+import { useState } from 'react'; // useEffect: only used by the disabled notifications code
+import { Alert, ScrollView, StyleSheet } from 'react-native'; // Platform: only used by the disabled notifications card
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrimaryButton } from '@/components/primary-button';
@@ -11,31 +11,32 @@ import { UserAvatar } from '@/components/user-avatar';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useCurrentUser } from '@/hooks/use-current-user';
 import { logout } from '@/lib/auth';
-import { disablePush, enablePush, getPushStatus, isPushOff } from '@/lib/push';
+// Notifications disabled for now: import { disablePush, enablePush, getPushStatus, isPushOff } from '@/lib/push';
 import { countUnsent, isOnline } from '@/offline';
 
 /** Who is signed in, which phone this is, and Logout. Opened from the Home header. */
 export default function ProfileScreen() {
   const user = useCurrentUser();
   const [loggingOut, setLoggingOut] = useState(false);
-  // Whether the person switched push off in the app (null until read).
-  const [pushOff, setPushOff] = useState<boolean | null>(null);
-  const [pushMsg, setPushMsg] = useState<string | null>(null);
-  useEffect(() => {
-    void isPushOff().then(setPushOff);
-  }, []);
-
-  async function togglePush() {
-    setPushMsg(null);
-    if (pushOff) {
-      const ok = await enablePush();
-      setPushOff(false);
-      if (!ok) setPushMsg('Notifications could not be switched on here. Allow them for this app in the phone’s settings, and use the installed app (not Expo Go).');
-    } else {
-      await disablePush();
-      setPushOff(true);
-    }
-  }
+  // Notifications disabled for now:
+  // // Whether the person switched push off in the app (null until read).
+  // const [pushOff, setPushOff] = useState<boolean | null>(null);
+  // const [pushMsg, setPushMsg] = useState<string | null>(null);
+  // useEffect(() => {
+  //   void isPushOff().then(setPushOff);
+  // }, []);
+  //
+  // async function togglePush() {
+  //   setPushMsg(null);
+  //   if (pushOff) {
+  //     const ok = await enablePush();
+  //     setPushOff(false);
+  //     if (!ok) setPushMsg('Notifications could not be switched on here. Allow them for this app in the phone’s settings, and use the installed app (not Expo Go).');
+  //   } else {
+  //     await disablePush();
+  //     setPushOff(true);
+  //   }
+  // }
 
   async function confirmLogout() {
     const unsent = await countUnsent();
@@ -86,6 +87,7 @@ export default function ProfileScreen() {
             <Row label="Model" value={[Device.brand, Device.modelName].filter(Boolean).join(' ')} />
           </ThemedView>
 
+          {/* Notifications disabled for now:
           {Platform.OS === 'android' ? (
             <ThemedView type="backgroundElement" style={styles.card}>
               <Row label="Notifications" value={pushOff === null ? '…' : pushOff ? 'Off' : 'On'} />
@@ -99,6 +101,7 @@ export default function ProfileScreen() {
               <PrimaryButton label={pushOff ? 'Turn notifications on' : 'Turn notifications off'} variant="text" disabled={pushOff === null} onPress={togglePush} />
             </ThemedView>
           ) : null}
+          */}
 
           <PrimaryButton label="Change password" variant="text" onPress={() => router.push('/change-password')} />
           <PrimaryButton label="Back" variant="text" onPress={() => router.back()} />

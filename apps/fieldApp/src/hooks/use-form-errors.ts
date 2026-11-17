@@ -1,8 +1,8 @@
 import { createContext, useCallback, useRef, useState, type RefObject } from 'react';
-import type { ScrollView, View } from 'react-native';
+import type { ScrollViewInstance, ViewInstance } from 'react-native';
 
 /** The scroll area of the enclosing ScreenShell and how far it is scrolled, so a failed form can scroll to its first bad field. */
-export type ScrollArea = { ref: RefObject<ScrollView | null>; /** A plain View around the scroll area, to find where it sits on screen. */ frame: RefObject<View | null>; offset: RefObject<number> };
+export type ScrollArea = { ref: RefObject<ScrollViewInstance | null>; /** A plain View around the scroll area, to find where it sits on screen. */ frame: RefObject<ViewInstance | null>; offset: RefObject<number> };
 export const ScrollAreaContext = createContext<ScrollArea | null>(null);
 
 export type FormErrors = {
@@ -14,7 +14,7 @@ export type FormErrors = {
   clear: (name: string) => void;
   clearAll: () => void;
   /** Used by `FormField`: hands over its view and the scroll area, so the form can find the field on screen. */
-  register: (name: string, node: View | null) => void;
+  register: (name: string, node: ViewInstance | null) => void;
   setScroll: (area: ScrollArea | null) => void;
 };
 
@@ -24,10 +24,10 @@ export type FormErrors = {
  */
 export function useFormErrors(order: string[]): FormErrors {
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const nodes = useRef(new Map<string, View>());
+  const nodes = useRef(new Map<string, ViewInstance>());
   const scrollRef = useRef<ScrollArea | null>(null);
 
-  const register = useCallback((name: string, node: View | null) => {
+  const register = useCallback((name: string, node: ViewInstance | null) => {
     if (node) nodes.current.set(name, node);
     else nodes.current.delete(name);
   }, []);

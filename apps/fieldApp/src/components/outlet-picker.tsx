@@ -204,7 +204,7 @@ export function OutletPicker({ label, options, value = null, onChange, multiple,
                   onEndReached={onEndReached}
                   onEndReachedThreshold={0.5}
                   ListEmptyComponent={
-                    loading ? null : (
+                    loading ? undefined : (
                       <ThemedText type="small" themeColor="textSecondary" style={styles.empty}>
                         {onSearch ? (query.trim() ? 'No doctor matches' : emptyText) : 'No match.'}
                       </ThemedText>
@@ -215,7 +215,7 @@ export function OutletPicker({ label, options, value = null, onChange, multiple,
                       <ThemedText type="small" themeColor="textSecondary" style={styles.empty}>
                         Loading…
                       </ThemedText>
-                    ) : null
+                    ) : undefined
                   }
                   renderItem={({ item }) => {
                     const selected = multiple ? values.includes(item.id) : item.id === value;
