@@ -13,9 +13,9 @@ minimumReleaseAgeExclude:
   - expo-constants@57.0.22
   - expo-notifications@57.0.23 || 57.0.24
 
-# One React for the whole workspace, and it is Expo's choice (apps/fieldApp pins 19.2.3 exactly).
+# One React for the whole workspace, and it is Expo's choice (apps/fieldApp pins 19.3.0 exactly).
 # A second copy of React in one render gives "Cannot read properties of null (reading 'useRef')"
 # during prerender, so apps/web follows the mobile app, not the other way round.
 overrides:
-  react: 19.2.3
-  react-dom: 19.2.3
+  react: 19.3.0
+  react-dom: 19.3.0

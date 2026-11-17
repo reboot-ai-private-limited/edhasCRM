@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { OfflineBanner } from '@/components/offline-banner';
-import { usePush } from '@/hooks/use-push';
+// Notifications disabled for now: import { usePush } from '@/hooks/use-push';
 import { useSessionUser } from '@/lib/session';
 import { useAutoSync } from '@/offline';
 
@@ -24,7 +24,7 @@ export default function RootLayout() {
   // back to Login. Done here, not in (tabs)/_layout.tsx, so the tab navigator is left untouched.
   const user = useSessionUser();
   useAutoSync();
-  usePush();
+  // Notifications disabled for now: usePush();
   const wasSignedIn = useRef(false);
   useEffect(() => {
     if (wasSignedIn.current && !user) {

@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useRef, useState, type ReactNode } from 'react';
-import { KeyboardAvoidingView, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, RefreshControl, ScrollView, type ScrollViewInstance, StyleSheet, View, type ViewInstance } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { MaxContentWidth, Spacing, WideContentWidth } from '@/constants/theme';
@@ -31,9 +31,9 @@ type Props = {
 export function ScreenShell({ title, children, onRefresh, refreshing = false, subtitle, wide, footer }: Props) {
   const theme = useTheme();
   const maxWidth = wide ? WideContentWidth : MaxContentWidth;
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   const offset = useRef(0);
-  const frameRef = useRef<View>(null);
+  const frameRef = useRef<ViewInstance>(null);
   const [area] = useState(() => ({ ref: scrollRef, frame: frameRef, offset }));
   return (
     <ThemedView style={styles.flex}>
